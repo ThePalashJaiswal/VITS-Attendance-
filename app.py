@@ -125,7 +125,26 @@ st.markdown("""
 
 /* ── Sidebar ── */
 section[data-testid="stSidebar"] { background: #0D1B2A !important; }
-section[data-testid="stSidebar"] * { color: rgba(255,255,255,0.85) !important; }
+section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] h4,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] div { color: rgba(255,255,255,0.85) !important; }
+section[data-testid="stSidebar"] input[type="number"],
+section[data-testid="stSidebar"] input[type="text"],
+section[data-testid="stSidebar"] input[type="date"],
+section[data-testid="stSidebar"] input {
+    color: #111111 !important;
+    -webkit-text-fill-color: #111111 !important;
+    background: #FFFFFF !important;
+    border-radius: 6px !important;
+}
+section[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] > div {
+    background: rgba(255,255,255,0.12) !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
+}
+section[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] span { color: #FFFFFF !important; }
 section[data-testid="stSidebar"] .stSelectbox label,
 section[data-testid="stSidebar"] .stNumberInput label,
 section[data-testid="stSidebar"] .stDateInput label { color: rgba(255,255,255,0.55) !important; font-size:0.75rem !important; }

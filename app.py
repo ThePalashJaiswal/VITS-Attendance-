@@ -1,93 +1,179 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import io
 import re
 import base64
-import json
+import io
 import os
+import json
 from datetime import date, datetime
 import anthropic
 
-# ── PAGE CONFIG ──────────────────────────────────────────────────────────────
+# ── PAGE CONFIG — must be first Streamlit call ────────────────────────────────
 st.set_page_config(
     page_title="VITS Attendance · MPOnline",
     page_icon="🎓",
     layout="wide",
-    initial_sidebar_state="expanded",  # always open
+    initial_sidebar_state="expanded",
 )
 
-# ── CONSTANTS ────────────────────────────────────────────────────────────────
-THRESHOLD_PCT     = 0.75          # 75% eligibility
-BOT_KEYWORDS      = ["otter.ai", "fireflies", "notetaker"]
-STAFF_DOMAINS     = ["mponline.gov.in"]
-DATA_DIR          = os.path.join(os.path.dirname(__file__), "data")
-LOGO_PATH         = os.path.join(DATA_DIR, "logo.png")
-MASTER_PATH       = os.path.join(DATA_DIR, "master_students.csv")
-BATCH_PATH        = os.path.join(DATA_DIR, "batch_info.csv")
-LOG_KEY           = "att_log"       # session_state key for attendance log DataFrame
-PROG_SHORT        = {
+# ── CONSTANTS ─────────────────────────────────────────────────────────────────
+THRESHOLD_PCT = 0.75
+BOT_KEYWORDS  = ["otter.ai", "fireflies", "notetaker"]
+STAFF_DOMAINS = ["mponline.gov.in"]
+DATA_DIR      = os.path.join(os.path.dirname(__file__), "data")
+LOGO_PATH     = os.path.join(DATA_DIR, "logo.png")
+MASTER_PATH   = os.path.join(DATA_DIR, "master_students.csv")
+BATCH_PATH    = os.path.join(DATA_DIR, "batch_info.csv")
+LOG_COLS      = ['Date','Batch','Session','App_No','Raw_Name','Clean_Name',
+                 'Email','Dur_Min','Dur_Raw','Status','Matched']
+PROG_SHORT    = {
     "Certification in Advanced Software Engineering & AI foundation": "SE + AI Foundation",
     "Advanced Software Engineering & Development Internship":         "Adv. Software Eng.",
     "AI/ML Internship Program":                                       "AI / ML",
-    "Digital Marketing Internship Program":                          "Digital Marketing",
+    "Digital Marketing Internship Program":                           "Digital Marketing",
 }
 
-# ── GLOBAL CSS ───────────────────────────────────────────────────────────────
+# ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* Hide default Streamlit chrome */
-#MainMenu, footer, header { visibility: hidden; }
-.block-container { padding-top: 1rem !important; }
+/* Core layout */
+#MainMenu, footer { visibility: hidden; }
+.block-container { padding-top: 0.8rem !important; padding-bottom: 1rem !important; }
 
-/* ── Custom topbar ── */
+/* Force sidebar always visible, collapse arrow styled */
+section[data-testid="stSidebar"] {
+    background: #0D1B2A !important;
+    min-width: 300px !important;
+}
+section[data-testid="stSidebar"] > div:first-child { padding-top: 1rem; }
+
+/* Sidebar text — white labels, readable */
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] .stMarkdown p,
+section[data-testid="stSidebar"] .stMarkdown h3,
+section[data-testid="stSidebar"] .stCaption { color: rgba(255,255,255,0.75) !important; }
+
+/* Sidebar inputs — white bg, black text, always readable */
+section[data-testid="stSidebar"] input {
+    background-color: #FFFFFF !important;
+    color: #111111 !important;
+    -webkit-text-fill-color: #111111 !important;
+    border-radius: 6px !important;
+    border: 1px solid rgba(255,255,255,0.3) !important;
+}
+/* Sidebar selectbox */
+section[data-testid="stSidebar"] .stSelectbox > div > div {
+    background-color: #1E3A5F !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
+    border-radius: 6px !important;
+    color: white !important;
+}
+section[data-testid="stSidebar"] .stSelectbox > div > div > div { color: white !important; }
+section[data-testid="stSidebar"] .stSelectbox svg { fill: white !important; }
+
+/* Sidebar info box */
+.sb-info {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 0.8rem;
+    line-height: 1.9;
+    color: rgba(255,255,255,0.85);
+    margin: 8px 0;
+}
+.sb-info strong { color: #FF6B35; }
+
+/* Threshold pill */
+.threshold-pill {
+    background: rgba(255,107,53,0.18);
+    border: 1px solid rgba(255,107,53,0.4);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.78rem;
+    color: #FFB399;
+    line-height: 1.8;
+    margin-top: 8px;
+}
+.threshold-pill strong { color: #FF6B35; }
+
+/* Topbar */
 .topbar {
-    background: linear-gradient(90deg, #1B3A6B 0%, #2E5FA3 100%);
+    background: linear-gradient(90deg, #0D1B2A 0%, #1B3A6B 60%, #2E5FA3 100%);
     border-radius: 12px;
-    padding: 14px 24px;
+    padding: 12px 24px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 20px;
-    box-shadow: 0 4px 18px rgba(27,58,107,0.18);
+    margin-bottom: 18px;
+    box-shadow: 0 4px 20px rgba(27,58,107,0.22);
 }
-.topbar-right {
-    font-size: 0.78rem;
-    color: rgba(255,255,255,0.65);
-    text-align: right;
-    line-height: 1.5;
+.topbar-right { text-align: right; line-height: 1.5; }
+.topbar-title { font-size: 0.95rem; font-weight: 700; color: white; }
+.topbar-sub { font-size: 0.72rem; color: rgba(255,255,255,0.55); }
+.topbar-pill {
+    display: inline-block;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 20px;
+    padding: 2px 10px;
+    font-size: 0.7rem;
+    color: rgba(255,255,255,0.8);
+    margin-left: 6px;
+}
+.topbar-pill.live::before {
+    content: '●';
+    color: #4ADE80;
+    margin-right: 4px;
+    font-size: 0.55rem;
 }
 
-/* ── KPI cards ── */
+/* Persistence banner */
+.persist-banner {
+    background: #E8F5EE;
+    border: 1px solid #86EFAC;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 0.8rem;
+    color: #1A7A4A;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+.persist-banner.warn {
+    background: #FFF3DC;
+    border-color: #FCD34D;
+    color: #92400E;
+}
+
+/* KPI cards */
 .kpi-card {
     background: white;
     border-radius: 10px;
-    padding: 18px 20px;
+    padding: 18px 16px;
     border: 1px solid #D0D5E8;
     border-left: 4px solid #2E5FA3;
-    box-shadow: 0 2px 10px rgba(27,58,107,0.08);
+    box-shadow: 0 2px 10px rgba(27,58,107,0.07);
     text-align: center;
+    height: 100%;
 }
 .kpi-card.green { border-left-color: #1A7A4A; }
 .kpi-card.amber { border-left-color: #E8920A; }
 .kpi-card.red   { border-left-color: #C0392B; }
-.kpi-card.blue  { border-left-color: #2E5FA3; }
-.kpi-val  { font-size: 2.2rem; font-weight: 800; color: #1B3A6B; line-height: 1; margin: 4px 0; font-family: monospace; }
-.kpi-lbl  { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #6B7280; }
-.kpi-sub  { font-size: 0.72rem; color: #9CA3AF; margin-top: 3px; }
+.kpi-val { font-size: 2rem; font-weight: 800; color: #1B3A6B; line-height: 1; margin: 5px 0 2px; font-family: 'Courier New', monospace; }
+.kpi-lbl { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #6B7280; }
+.kpi-sub { font-size: 0.7rem; color: #9CA3AF; }
 
-/* ── Section title ── */
+/* Section heading */
 .sec-title {
-    font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.08em; color: #6B7280; margin: 0 0 12px 0;
+    font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.09em; color: #6B7280; margin: 0 0 14px;
     padding-left: 10px; border-left: 3px solid #FF6B35;
 }
 
-/* ── Status badges ── */
-.badge {
-    display: inline-block; padding: 3px 10px; border-radius: 20px;
-    font-size: 0.72rem; font-weight: 700;
-}
+/* Badges */
+.badge { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
 .badge-present  { background: #E8F5EE; color: #1A7A4A; }
 .badge-late     { background: #FFF3DC; color: #E8920A; }
 .badge-absent   { background: #FDEDEC; color: #C0392B; }
@@ -96,95 +182,64 @@ st.markdown("""
 .badge-danger   { background: #FDEDEC; color: #C0392B; }
 .badge-nodata   { background: #F3F4F6; color: #9CA3AF; }
 
-/* ── Upload hint ── */
-.upload-hint {
-    background: #EFF6FF; border: 1px dashed #93C5FD;
-    border-radius: 10px; padding: 16px 18px;
-    font-size: 0.84rem; color: #1E40AF; margin-bottom: 14px;
-    line-height: 1.7;
-}
-.upload-hint strong { color: #1B3A6B; }
+/* Progress bar */
+.prog-row { display: flex; align-items: center; gap: 8px; }
+.prog-bar { flex: 1; height: 7px; background: #E5E7EB; border-radius: 4px; overflow: hidden; min-width: 60px; }
+.prog-fill { height: 100%; border-radius: 4px; }
+.prog-val { font-size: 0.75rem; font-weight: 700; min-width: 40px; text-align: right; font-family: monospace; }
 
-/* ── Alert boxes ── */
-.alert { padding: 12px 16px; border-radius: 8px; font-size: 0.84rem; margin-bottom: 10px; }
-.alert-success { background: #E8F5EE; color: #1A7A4A; border: 1px solid #86EFAC; }
+/* Alerts */
+.alert { padding: 11px 16px; border-radius: 8px; font-size: 0.83rem; margin-bottom: 10px; line-height: 1.5; }
+.alert-success { background: #E8F5EE; color: #166534; border: 1px solid #86EFAC; }
 .alert-warning { background: #FFF3DC; color: #92400E; border: 1px solid #FCD34D; }
 .alert-error   { background: #FDEDEC; color: #991B1B; border: 1px solid #FCA5A5; }
 .alert-info    { background: #EFF6FF; color: #1E40AF; border: 1px solid #93C5FD; }
 
-/* ── Table styling ── */
-.styled-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+/* Upload hint */
+.upload-hint {
+    background: #EFF6FF; border: 1.5px dashed #93C5FD;
+    border-radius: 10px; padding: 14px 18px;
+    font-size: 0.83rem; color: #1E40AF; margin-bottom: 14px; line-height: 1.75;
+}
+.upload-hint strong { color: #1B3A6B; }
+
+/* Tables */
+.styled-table { width: 100%; border-collapse: collapse; font-size: 0.81rem; }
 .styled-table th {
     background: #1B3A6B; color: white; padding: 9px 12px;
-    text-align: left; font-weight: 600; font-size: 0.74rem;
-    text-transform: uppercase; letter-spacing: 0.04em;
+    text-align: left; font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
 }
-.styled-table td { padding: 8px 12px; border-bottom: 1px solid #E5E7EB; }
-.styled-table tr:hover td { background: #F9FAFB; }
+.styled-table td { padding: 8px 12px; border-bottom: 1px solid #E5E7EB; vertical-align: middle; }
 .styled-table tr:last-child td { border-bottom: none; }
+.styled-table tr:hover td { background: #F9FAFB; }
+.tbl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #E5E7EB; box-shadow: 0 2px 10px rgba(27,58,107,0.06); }
 
-/* ── Sidebar ── */
-section[data-testid="stSidebar"] { background: #0D1B2A !important; }
-section[data-testid="stSidebar"] h3,
-section[data-testid="stSidebar"] h4,
-section[data-testid="stSidebar"] p,
-section[data-testid="stSidebar"] span,
-section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] div { color: rgba(255,255,255,0.85) !important; }
-section[data-testid="stSidebar"] input[type="number"],
-section[data-testid="stSidebar"] input[type="text"],
-section[data-testid="stSidebar"] input[type="date"],
-section[data-testid="stSidebar"] input {
-    color: #111111 !important;
-    -webkit-text-fill-color: #111111 !important;
-    background: #FFFFFF !important;
-    border-radius: 6px !important;
-}
-section[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] > div {
-    background: rgba(255,255,255,0.12) !important;
-    border: 1px solid rgba(255,255,255,0.25) !important;
-}
-section[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] span { color: #FFFFFF !important; }
-section[data-testid="stSidebar"] .stSelectbox label,
-section[data-testid="stSidebar"] .stNumberInput label,
-section[data-testid="stSidebar"] .stDateInput label { color: rgba(255,255,255,0.55) !important; font-size:0.75rem !important; }
-
-/* ── Progress bars ── */
-.prog-row { display: flex; align-items: center; gap: 10px; }
-.prog-bar { flex: 1; height: 7px; background: #E5E7EB; border-radius: 4px; overflow: hidden; }
-.prog-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
-.prog-val  { font-size: 0.78rem; font-weight: 700; min-width: 42px; text-align: right; font-family: monospace; }
-
-/* ── AI panel ── */
-.ai-wrap {
-    background: linear-gradient(135deg, #0D1B2A 0%, #1B3A6B 100%);
-    border-radius: 12px; padding: 22px; color: white;
-}
-.ai-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: rgba(255,255,255,0.45); margin-bottom: 4px; }
-.ai-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 4px; }
-.ai-sub   { font-size: 0.82rem; color: rgba(255,255,255,0.6); margin-bottom: 16px; }
-.ai-out   {
-    background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 8px; padding: 16px; font-size: 0.84rem;
-    color: rgba(255,255,255,0.9); line-height: 1.75; white-space: pre-wrap;
-    min-height: 80px; max-height: 400px; overflow-y: auto;
-}
-
-/* ── Step indicators ── */
-.steps { display: flex; gap: 0; margin-bottom: 20px; border-radius: 8px; overflow: hidden; }
-.step { flex: 1; padding: 10px 8px; text-align: center; font-size: 0.76rem; font-weight: 600; background: #E5E7EB; color: #6B7280; }
+/* Step bar */
+.steps { display: flex; border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+.step { flex: 1; padding: 10px 6px; text-align: center; font-size: 0.74rem; font-weight: 600; background: #E5E7EB; color: #6B7280; }
 .step.done   { background: #1A7A4A; color: white; }
 .step.active { background: #1B3A6B; color: white; }
+
+/* AI panel */
+.ai-wrap { background: linear-gradient(135deg, #0D1B2A 0%, #1B3A6B 100%); border-radius: 12px; padding: 20px; }
+.ai-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; color: rgba(255,255,255,0.4); margin-bottom: 4px; }
+.ai-title { font-size: 1rem; font-weight: 700; color: white; margin-bottom: 3px; }
+.ai-sub   { font-size: 0.8rem; color: rgba(255,255,255,0.55); margin-bottom: 14px; }
+
+/* Empty state */
+.empty-state { text-align: center; padding: 48px 24px; color: #9CA3AF; }
+.empty-icon  { font-size: 2.8rem; margin-bottom: 10px; }
+.empty-state h3 { color: #374151; font-size: 1rem; margin-bottom: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── HELPERS ──────────────────────────────────────────────────────────────────
+# ── LOAD MASTER DATA ─────────────────────────────────────────────────────────
 @st.cache_data
 def load_master():
-    df = pd.read_csv(MASTER_PATH, dtype=str)
+    df = pd.read_csv(MASTER_PATH, dtype=str).fillna('')
     df.columns = ['App_No','Name','Email','Prog_Code','Prog_Name','Batch','Timing','SME']
-    df = df.fillna('')
     return df
 
 @st.cache_data
@@ -193,401 +248,454 @@ def load_batches():
     df['Enrolled'] = pd.to_numeric(df['Enrolled'], errors='coerce').fillna(0).astype(int)
     return df
 
+@st.cache_data
 def get_logo_b64():
     with open(LOGO_PATH, "rb") as f:
         return base64.b64encode(f.read()).decode()
 
+
+# ── GOOGLE SHEETS PERSISTENCE ─────────────────────────────────────────────────
+def get_gsheet_client():
+    """Return authorised gspread client using service account from secrets."""
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        scopes = ["https://spreadsheets.google.com/feeds",
+                  "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+def get_sheet(client, sheet_name="Attendance Log"):
+    """Return the worksheet, creating it if needed."""
+    try:
+        sheet_id = st.secrets.get("GSHEET_ID", "")
+        if not sheet_id:
+            return None
+        sh = client.open_by_key(sheet_id)
+        try:
+            return sh.worksheet(sheet_name)
+        except Exception:
+            ws = sh.add_worksheet(title=sheet_name, rows=5000, cols=len(LOG_COLS))
+            ws.append_row(LOG_COLS)
+            return ws
+    except Exception:
+        return None
+
+def load_log_from_sheet():
+    """Load attendance log from Google Sheet → DataFrame."""
+    client = get_gsheet_client()
+    if not client:
+        return None
+    ws = get_sheet(client)
+    if not ws:
+        return None
+    try:
+        data = ws.get_all_records()
+        if not data:
+            return pd.DataFrame(columns=LOG_COLS)
+        return pd.DataFrame(data)
+    except Exception:
+        return None
+
+def save_rows_to_sheet(rows_df):
+    """Append new rows to Google Sheet."""
+    client = get_gsheet_client()
+    if not client:
+        return False
+    ws = get_sheet(client)
+    if not ws:
+        return False
+    try:
+        for _, row in rows_df.iterrows():
+            ws.append_row([str(row.get(c, '')) for c in LOG_COLS])
+        return True
+    except Exception as e:
+        st.error(f"Google Sheets save error: {e}")
+        return False
+
+def has_sheets_configured():
+    """Check if Google Sheets secrets are present."""
+    try:
+        return bool(st.secrets.get("GSHEET_ID")) and bool(st.secrets.get("gcp_service_account"))
+    except Exception:
+        return False
+
+
+# ── SESSION STATE — LOG ───────────────────────────────────────────────────────
+def init_log():
+    """Load from Google Sheets if configured, else use session memory."""
+    if "log_loaded" not in st.session_state:
+        st.session_state["log_loaded"] = False
+
+    if not st.session_state["log_loaded"]:
+        if has_sheets_configured():
+            df = load_log_from_sheet()
+            st.session_state["att_log"] = df if df is not None else pd.DataFrame(columns=LOG_COLS)
+            st.session_state["using_sheets"] = df is not None
+        else:
+            if "att_log" not in st.session_state:
+                st.session_state["att_log"] = pd.DataFrame(columns=LOG_COLS)
+            st.session_state["using_sheets"] = False
+        st.session_state["log_loaded"] = True
+
+def get_log():
+    return st.session_state.get("att_log", pd.DataFrame(columns=LOG_COLS))
+
+def append_log(rows_df):
+    existing = get_log()
+    st.session_state["att_log"] = pd.concat([existing, rows_df], ignore_index=True)
+    if st.session_state.get("using_sheets"):
+        return save_rows_to_sheet(rows_df)
+    return True
+
+
+# ── PARSERS & HELPERS ─────────────────────────────────────────────────────────
 def parse_duration_minutes(s):
-    """Parse '1h 54m 46s' → total minutes (float)."""
-    if not s or not isinstance(s, str):
-        return 0.0
-    h = int(m.group(1)) if (m := re.search(r'(\d+)h', s)) else 0
+    if not s or not isinstance(s, str): return 0.0
+    h  = int(m.group(1)) if (m := re.search(r'(\d+)h', s)) else 0
     mn = int(m.group(1)) if (m := re.search(r'(\d+)m', s)) else 0
     sc = int(m.group(1)) if (m := re.search(r'(\d+)s', s)) else 0
     return round(h * 60 + mn + sc / 60, 1)
 
 def clean_name(raw):
-    """Remove (External), (Unverified), roll numbers from Teams name."""
     return re.sub(r'\s*\([^)]*\)\s*', ' ', str(raw)).strip()
 
 def is_excluded(name, email):
-    n, e = name.lower(), email.lower()
+    n, e = name.lower(), (email or '').lower()
     return any(k in n for k in BOT_KEYWORDS) or any(d in e for d in STAFF_DOMAINS)
 
 def match_student(raw_name, master_df):
-    """Return App_No if name matches master, else None."""
     cleaned = clean_name(raw_name).lower().strip()
-    # Exact match on cleaned name
     mask = master_df['Name'].str.lower().str.strip() == cleaned
     if mask.any():
         return master_df.loc[mask.idxmax(), 'App_No']
-    # Partial match — name contains or is contained
     for _, row in master_df.iterrows():
-        master_lower = row['Name'].lower().strip()
-        if master_lower in cleaned or cleaned in master_lower:
+        ml = row['Name'].lower().strip()
+        if ml in cleaned or cleaned in ml:
             return row['App_No']
     return None
 
 def parse_teams_csv(text):
-    """Parse Teams attendance CSV → list of dicts (Section 2 participants only)."""
     lines = text.splitlines()
-    in_participants = False
-    rows = []
+    in_p, rows = False, []
     for line in lines:
-        if line.startswith('2. Participants'):
-            in_participants = True
-            continue
-        if in_participants and line.startswith('3. In-Meeting'):
-            break
-        if not in_participants:
-            continue
-        if line.startswith('Name,'):
-            continue
-        if not line.strip().replace(',', ''):
-            continue
-        # Parse CSV line (handle quoted commas)
+        if line.startswith('2. Participants'): in_p = True; continue
+        if in_p and line.startswith('3. In-Meeting'): break
+        if not in_p or line.startswith('Name,'): continue
+        if not line.strip().replace(',', ''): continue
         cols, cur, in_q = [], '', False
         for ch in line:
-            if ch == '"':
-                in_q = not in_q
-            elif ch == ',' and not in_q:
-                cols.append(cur.strip())
-                cur = ''
-            else:
-                cur += ch
+            if ch == '"': in_q = not in_q
+            elif ch == ',' and not in_q: cols.append(cur.strip()); cur = ''
+            else: cur += ch
         cols.append(cur.strip())
-        if len(cols) >= 4:
-            rows.append(cols)
+        if len(cols) >= 4: rows.append(cols)
     return rows
 
 def status_label(dur_min, threshold_min):
-    if dur_min >= threshold_min:
-        return "✅ Present"
-    elif dur_min >= 1:
-        return "⚠ Late"
-    else:
-        return "❌ Absent"
+    if dur_min >= threshold_min: return "✅ Present"
+    elif dur_min >= 1:           return "⚠ Late"
+    else:                        return "❌ Absent"
 
 def attendance_status(pct):
-    if pct is None:
-        return "No Data"
-    if pct >= THRESHOLD_PCT:
-        return "✅ Eligible"
-    elif pct >= 0.50:
-        return "⚠ At Risk"
-    else:
-        return "❌ Will Not Qualify"
+    if pct is None:       return "No Data"
+    if pct >= THRESHOLD_PCT: return "✅ Eligible"
+    if pct >= 0.50:       return "⚠ At Risk"
+    return "❌ Will Not Qualify"
 
 def pct_bar_html(pct_float, color=None):
     if pct_float is None:
-        return '<span style="color:#9CA3AF;font-size:0.78rem">No data</span>'
+        return '<span style="color:#9CA3AF;font-size:0.78rem">No data yet</span>'
     p = round(pct_float * 100, 1)
     if color is None:
         color = "#1A7A4A" if p >= 75 else ("#E8920A" if p >= 50 else "#C0392B")
-    return f'''<div class="prog-row">
-        <div class="prog-bar"><div class="prog-fill" style="width:{p}%;background:{color}"></div></div>
-        <span class="prog-val" style="color:{color}">{p:.1f}%</span>
-    </div>'''
+    return (f'<div class="prog-row">'
+            f'<div class="prog-bar"><div class="prog-fill" style="width:{p}%;background:{color}"></div></div>'
+            f'<span class="prog-val" style="color:{color}">{p:.1f}%</span></div>')
 
 def badge_html(text):
-    cls_map = {
-        "✅ Present":         "badge-present",
-        "⚠ Late":            "badge-late",
-        "❌ Absent":          "badge-absent",
-        "✅ Eligible":        "badge-eligible",
-        "⚠ At Risk":         "badge-atrisk",
-        "❌ Will Not Qualify":"badge-danger",
-        "No Data":            "badge-nodata",
-    }
-    cls = cls_map.get(text, "badge-nodata")
+    cls = {"✅ Present":"badge-present","⚠ Late":"badge-late","❌ Absent":"badge-absent",
+           "✅ Eligible":"badge-eligible","⚠ At Risk":"badge-atrisk",
+           "❌ Will Not Qualify":"badge-danger","No Data":"badge-nodata"}.get(text,"badge-nodata")
     return f'<span class="badge {cls}">{text}</span>'
 
-def init_log():
-    if LOG_KEY not in st.session_state:
-        st.session_state[LOG_KEY] = pd.DataFrame(columns=[
-            'Date','Batch','Session','App_No','Raw_Name','Clean_Name',
-            'Email','Dur_Min','Dur_Raw','Status','Matched'
-        ])
-
-def get_log():
-    return st.session_state[LOG_KEY]
-
-def append_log(rows_df):
-    existing = get_log()
-    st.session_state[LOG_KEY] = pd.concat([existing, rows_df], ignore_index=True)
-
-def compute_summary(master_df, log_df):
-    """Per (App_No, Batch) attendance summary."""
+@st.cache_data(show_spinner=False)
+def compute_summary(master_hash, log_hash):
+    """Cached summary — recomputes only when data changes."""
+    master_df = load_master()
+    log_df    = get_log()
     rows = []
     for _, stu in master_df.iterrows():
-        app_no = stu['App_No']
-        batch  = stu['Batch']
-        sub = log_df[(log_df['App_No'] == app_no) & (log_df['Batch'] == batch)]
-        sessions_held = log_df[log_df['Batch'] == batch]['Session'].nunique()
-        present = (sub['Status'] == '✅ Present').sum()
-        late    = (sub['Status'] == '⚠ Late').sum()
-        absent  = (sub['Status'] == '❌ Absent').sum()
-        attend_pct = (present / sessions_held) if sessions_held > 0 else None
-        rows.append({
-            'App_No': app_no, 'Name': stu['Name'], 'Email': stu['Email'],
-            'Batch': batch, 'Program': stu['Prog_Name'], 'SME': stu['SME'],
-            'Sessions_Held': sessions_held, 'Present': present,
-            'Late': late, 'Absent': absent,
-            'Attend_Pct': attend_pct,
-            'Status': attendance_status(attend_pct)
-        })
+        app_no, batch = stu['App_No'], stu['Batch']
+        sub           = log_df[(log_df['App_No']==app_no) & (log_df['Batch']==batch)] if not log_df.empty else pd.DataFrame()
+        sess_held     = log_df[log_df['Batch']==batch]['Session'].nunique() if not log_df.empty else 0
+        present       = (sub['Status']=='✅ Present').sum() if not sub.empty else 0
+        late          = (sub['Status']=='⚠ Late').sum()    if not sub.empty else 0
+        absent        = (sub['Status']=='❌ Absent').sum()  if not sub.empty else 0
+        pct           = (present / sess_held) if sess_held > 0 else None
+        rows.append({'App_No':app_no,'Name':stu['Name'],'Email':stu['Email'],
+                     'Batch':batch,'Program':stu['Prog_Name'],'SME':stu['SME'],
+                     'Sessions_Held':sess_held,'Present':present,'Late':late,'Absent':absent,
+                     'Attend_Pct':pct,'Status':attendance_status(pct)})
     return pd.DataFrame(rows)
 
-def export_excel(master_df, log_df, summary_df):
+def get_summary():
+    log_df = get_log()
+    log_hash = str(len(log_df)) + str(log_df['Status'].value_counts().to_dict() if not log_df.empty else '')
+    return compute_summary("v1", log_hash)
+
+
+# ── EXCEL EXPORT ──────────────────────────────────────────────────────────────
+def export_excel(log_df, summary_df):
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         wb = writer.book
+        hdr  = wb.add_format({'bold':True,'bg_color':'#1B3A6B','font_color':'white','font_size':9,'border':1})
+        grn  = wb.add_format({'bg_color':'#E8F5EE','font_color':'#1A7A4A','bold':True,'border':1,'font_size':9})
+        amb  = wb.add_format({'bg_color':'#FFF3DC','font_color':'#92400E','bold':True,'border':1,'font_size':9})
+        red  = wb.add_format({'bg_color':'#FDEDEC','font_color':'#991B1B','bold':True,'border':1,'font_size':9})
+        pct  = wb.add_format({'num_format':'0.0%','border':1,'align':'center','font_size':9})
+        cel  = wb.add_format({'border':1,'font_size':9})
+        alt  = wb.add_format({'border':1,'font_size':9,'bg_color':'#F9FAFB'})
 
-        # Formats
-        hdr_fmt = wb.add_format({'bold':True,'bg_color':'#1B3A6B','font_color':'white',
-                                  'font_size':10,'border':1,'align':'center'})
-        green_fmt = wb.add_format({'bg_color':'#E8F5EE','font_color':'#1A7A4A','bold':True,'border':1})
-        amber_fmt = wb.add_format({'bg_color':'#FFF3DC','font_color':'#92400E','bold':True,'border':1})
-        red_fmt   = wb.add_format({'bg_color':'#FDEDEC','font_color':'#991B1B','bold':True,'border':1})
-        pct_fmt   = wb.add_format({'num_format':'0.0%','border':1,'align':'center'})
-        cell_fmt  = wb.add_format({'border':1,'font_size':9})
-        mono_fmt  = wb.add_format({'border':1,'font_size':9,'font_name':'Courier New'})
-        alt_fmt   = wb.add_format({'border':1,'font_size':9,'bg_color':'#F9FAFB'})
+        def hdr_row(ws, hdrs, widths):
+            for c,(h,w) in enumerate(zip(hdrs,widths)):
+                ws.write(0,c,h,hdr); ws.set_column(c,c,w)
 
-        def write_header(ws, headers, widths):
-            for c, (h, w) in enumerate(zip(headers, widths)):
-                ws.write(0, c, h, hdr_fmt)
-                ws.set_column(c, c, w)
+        def row_fmt(i): return alt if i%2==0 else cel
 
-        # ── Sheet 1: Attendance Log ──────────────────────────────────────
-        ws1 = writer.sheets.get('Attendance Log') or wb.add_worksheet('Attendance Log')
+        def status_fmt(v):
+            if '✅ Present' in str(v) or '✅ Eligible' in str(v): return grn
+            if '⚠' in str(v): return amb
+            if '❌' in str(v): return red
+            return cel
+
+        def write_pct(ws, r, c, v):
+            if v is not None and str(v) not in ('','None'):
+                try: ws.write_number(r, c, float(v), pct)
+                except: ws.write_blank(r, c, None, pct)
+            else:
+                ws.write_blank(r, c, None, pct)
+
+        # Sheet 1 — Attendance Log
+        ws1 = wb.add_worksheet('Attendance Log')
         writer.sheets['Attendance Log'] = ws1
-        log_cols = ['Date','Batch','Session','App_No','Clean_Name','Email','Dur_Min','Dur_Raw','Status']
-        log_hdrs = ['Date','Batch','Session','App No.','Student Name','Email','Duration (min)','Duration (raw)','Status']
-        log_widths = [12,10,9,16,28,32,14,14,16]
-        write_header(ws1, log_hdrs, log_widths)
+        cols1 = ['Date','Batch','Session','App_No','Clean_Name','Email','Dur_Min','Dur_Raw','Status']
+        hdrs1 = ['Date','Batch','Session','App No.','Name','Email','Duration (min)','Duration (raw)','Status']
+        hdr_row(ws1, hdrs1, [12,10,9,16,28,30,14,14,16])
         if not log_df.empty:
-            for r, row in log_df[log_cols].iterrows():
-                fmt = alt_fmt if r % 2 == 0 else cell_fmt
-                for c, v in enumerate(row):
-                    if log_cols[c] == 'Status':
-                        sf = green_fmt if '✅ Present' in str(v) else (amber_fmt if '⚠' in str(v) else red_fmt)
-                        ws1.write(r+1, c, v, sf)
-                    else:
-                        ws1.write(r+1, c, v, mono_fmt if c in [0,1,2,3] else fmt)
+            for r, row in log_df[cols1].reset_index(drop=True).iterrows():
+                f = row_fmt(r)
+                for c,v in enumerate(row):
+                    if cols1[c]=='Status': ws1.write(r+1,c,str(v),status_fmt(v))
+                    else: ws1.write(r+1,c,str(v) if v else '',f)
 
-        # ── Sheet 2: Student Summary ─────────────────────────────────────
+        # Sheet 2 — Student Summary
         ws2 = wb.add_worksheet('Student Summary')
         writer.sheets['Student Summary'] = ws2
-        sum_hdrs  = ['App No.','Name','Email','Batch','Program','SME','Sessions Held','Present','Late','Absent','Attend %','Status']
-        sum_cols  = ['App_No','Name','Email','Batch','Program','SME','Sessions_Held','Present','Late','Absent','Attend_Pct','Status']
-        sum_widths= [16,28,32,10,40,22,14,9,9,9,12,22]
-        write_header(ws2, sum_hdrs, sum_widths)
+        cols2 = ['App_No','Name','Email','Batch','Program','SME','Sessions_Held','Present','Late','Absent','Attend_Pct','Status']
+        hdrs2 = ['App No.','Name','Email','Batch','Program','SME','Sessions','Present','Late','Absent','Attend %','Status']
+        hdr_row(ws2, hdrs2, [16,28,30,10,40,22,10,9,9,9,12,22])
         if not summary_df.empty:
-            for r, row in summary_df[sum_cols].iterrows():
-                fmt = alt_fmt if r % 2 == 0 else cell_fmt
-                for c, col in enumerate(sum_cols):
+            for r, row in summary_df[cols2].reset_index(drop=True).iterrows():
+                f = row_fmt(r)
+                for c,col in enumerate(cols2):
                     v = row[col]
-                    if col == 'Attend_Pct':
-                        ws2.write_number(r+1, c, float(v), pct_fmt) if v is not None else ws2.write_blank(r+1, c, None, pct_fmt)
-                    elif col == 'Status':
-                        sf = green_fmt if '✅ Eligible' in str(v) else (amber_fmt if '⚠' in str(v) else (red_fmt if '❌' in str(v) else cell_fmt))
-                        ws2.write(r+1, c, v, sf)
-                    else:
-                        ws2.write(r+1, c, str(v) if v else '', mono_fmt if c in [0,3] else fmt)
+                    if col=='Attend_Pct': write_pct(ws2,r+1,c,v)
+                    elif col=='Status': ws2.write(r+1,c,str(v),status_fmt(v))
+                    else: ws2.write(r+1,c,str(v) if v else '',f)
 
-        # ── Sheet 3: At-Risk ─────────────────────────────────────────────
+        # Sheet 3 — At-Risk
         ws3 = wb.add_worksheet('At-Risk Report')
         writer.sheets['At-Risk Report'] = ws3
-        risk_df = summary_df[summary_df['Status'].isin(['⚠ At Risk','❌ Will Not Qualify'])]
-        risk_hdrs  = ['App No.','Name','Email','Batch','Program','SME','Attend %','Status']
-        risk_cols  = ['App_No','Name','Email','Batch','Program','SME','Attend_Pct','Status']
-        risk_widths= [16,28,32,10,40,22,12,22]
-        write_header(ws3, risk_hdrs, risk_widths)
-        for r, row in risk_df[risk_cols].reset_index(drop=True).iterrows():
-            fmt = alt_fmt if r % 2 == 0 else cell_fmt
-            for c, col in enumerate(risk_cols):
+        risk = summary_df[summary_df['Status'].isin(['⚠ At Risk','❌ Will Not Qualify'])]
+        cols3 = ['App_No','Name','Email','Batch','Program','SME','Attend_Pct','Status']
+        hdrs3 = ['App No.','Name','Email','Batch','Program','SME','Attend %','Status']
+        hdr_row(ws3, hdrs3, [16,28,30,10,40,22,12,22])
+        for r, row in risk[cols3].reset_index(drop=True).iterrows():
+            f = row_fmt(r)
+            for c,col in enumerate(cols3):
                 v = row[col]
-                if col == 'Attend_Pct':
-                    ws3.write_number(r+1, c, float(v), pct_fmt) if v is not None else ws3.write_blank(r+1, c, None, pct_fmt)
-                elif col == 'Status':
-                    sf = amber_fmt if '⚠' in str(v) else red_fmt
-                    ws3.write(r+1, c, v, sf)
-                else:
-                    ws3.write(r+1, c, str(v) if v else '', mono_fmt if c in [0,3] else fmt)
+                if col=='Attend_Pct': write_pct(ws3,r+1,c,v)
+                elif col=='Status': ws3.write(r+1,c,str(v),status_fmt(v))
+                else: ws3.write(r+1,c,str(v) if v else '',f)
 
-        # ── Sheet 4: Batch Summary ───────────────────────────────────────
+        # Sheet 4 — Batch Summary
         ws4 = wb.add_worksheet('Batch Summary')
         writer.sheets['Batch Summary'] = ws4
-        b_hdrs  = ['Batch','Program','SME','Timing','Enrolled','Sessions Run','Eligible','At Risk','Will Not Qualify','Eligible %']
-        b_widths= [10,40,22,16,10,13,10,10,18,14]
-        write_header(ws4, b_hdrs, b_widths)
-        batches_df = load_batches()
-        log_grp = log_df.groupby('Batch')['Session'].nunique().reset_index() if not log_df.empty else pd.DataFrame(columns=['Batch','Session'])
-        for r, brow in batches_df.iterrows():
-            b = brow['Batch']
-            b_sum = summary_df[summary_df['Batch'] == b] if not summary_df.empty else pd.DataFrame()
-            sess_run = log_grp.loc[log_grp['Batch']==b,'Session'].values[0] if len(log_grp) and b in log_grp['Batch'].values else 0
-            elig  = (b_sum['Status'] == '✅ Eligible').sum() if len(b_sum) else 0
-            risk  = (b_sum['Status'] == '⚠ At Risk').sum()  if len(b_sum) else 0
-            fail  = (b_sum['Status'] == '❌ Will Not Qualify').sum() if len(b_sum) else 0
-            ep    = elig / int(brow['Enrolled']) if int(brow['Enrolled']) > 0 and sess_run > 0 else None
-            vals  = [b, brow['Program'], brow['SME'], brow['Timing'], int(brow['Enrolled']), sess_run, elig, risk, fail, ep]
-            fmt   = alt_fmt if r % 2 == 0 else cell_fmt
-            for c, v in enumerate(vals):
-                if c == 9:
-                    ws4.write_number(r+1, c, float(v), pct_fmt) if v is not None else ws4.write_blank(r+1, c, None, pct_fmt)
-                else:
-                    ws4.write(r+1, c, v, fmt)
+        batches = load_batches()
+        log_sess = log_df.groupby('Batch')['Session'].nunique().to_dict() if not log_df.empty else {}
+        hdrs4 = ['Batch','Program','SME','Timing','Enrolled','Sessions Run','Eligible','At Risk','Won\'t Qualify','Eligible %']
+        hdr_row(ws4, hdrs4, [10,40,22,16,10,13,10,10,14,13])
+        for r, brow in batches.reset_index(drop=True).iterrows():
+            b     = brow['Batch']
+            b_sum = summary_df[summary_df['Batch']==b] if not summary_df.empty else pd.DataFrame()
+            sess  = log_sess.get(b, 0)
+            elig  = (b_sum['Status']=='✅ Eligible').sum() if not b_sum.empty else 0
+            risk  = (b_sum['Status']=='⚠ At Risk').sum()  if not b_sum.empty else 0
+            fail  = (b_sum['Status']=='❌ Will Not Qualify').sum() if not b_sum.empty else 0
+            ep    = elig/int(brow['Enrolled']) if int(brow['Enrolled'])>0 and sess>0 else None
+            f     = row_fmt(r)
+            for c,v in enumerate([b,brow['Program'],brow['SME'],brow['Timing'],int(brow['Enrolled']),sess,elig,risk,fail]):
+                ws4.write(r+1,c,v,f)
+            write_pct(ws4,r+1,9,ep)
 
-        # ── Sheet 5: Session-wise pivot ──────────────────────────────────
+        # Sheet 5 — Session Pivot
         if not log_df.empty:
             ws5 = wb.add_worksheet('Session Pivot')
             writer.sheets['Session Pivot'] = ws5
-            pivot_hdrs = ['Date','Batch','Session','Total Students','Present','Late','Absent','Attendance Rate']
-            write_header(ws5, pivot_hdrs, [12,10,9,14,10,10,10,14])
-            pivot = log_df.groupby(['Date','Batch','Session']).agg(
+            hdr_row(ws5, ['Date','Batch','Session','Total','Present','Late','Absent','Rate'],
+                    [12,10,9,10,10,10,10,12])
+            piv = log_df.groupby(['Date','Batch','Session']).agg(
                 Total=('Status','count'),
-                Present=('Status', lambda x: (x=='✅ Present').sum()),
-                Late=('Status', lambda x: (x=='⚠ Late').sum()),
-                Absent=('Status', lambda x: (x=='❌ Absent').sum()),
+                Present=('Status', lambda x:(x=='✅ Present').sum()),
+                Late=('Status',    lambda x:(x=='⚠ Late').sum()),
+                Absent=('Status',  lambda x:(x=='❌ Absent').sum()),
             ).reset_index()
-            pivot['Rate'] = pivot['Present'] / pivot['Total']
-            for r, row in pivot.iterrows():
-                fmt = alt_fmt if r % 2 == 0 else cell_fmt
-                ws5.write(r+1, 0, str(row['Date']), fmt)
-                ws5.write(r+1, 1, row['Batch'], fmt)
-                ws5.write(r+1, 2, row['Session'], fmt)
-                ws5.write(r+1, 3, row['Total'], fmt)
-                ws5.write(r+1, 4, row['Present'], fmt)
-                ws5.write(r+1, 5, row['Late'], fmt)
-                ws5.write(r+1, 6, row['Absent'], fmt)
-                ws5.write_number(r+1, 7, float(row['Rate']), pct_fmt) if row['Rate'] is not None else ws5.write_blank(r+1, 7, None, pct_fmt)
+            piv['Rate'] = piv['Present']/piv['Total']
+            for r, row in piv.reset_index(drop=True).iterrows():
+                f = row_fmt(r)
+                for c,v in enumerate([str(row['Date']),row['Batch'],row['Session'],
+                                       row['Total'],row['Present'],row['Late'],row['Absent']]):
+                    ws5.write(r+1,c,v,f)
+                write_pct(ws5,r+1,7,row['Rate'])
 
     return buf.getvalue()
 
 
-# ── TOPBAR ───────────────────────────────────────────────────────────────────
+# ── TOPBAR ────────────────────────────────────────────────────────────────────
 def render_topbar():
-    logo_b64 = get_logo_b64()
     log_df = get_log()
-    total_sessions = log_df['Session'].nunique() if not log_df.empty else 0
-    total_records  = len(log_df)
+    sess   = log_df['Session'].nunique() if not log_df.empty else 0
+    recs   = len(log_df)
+    mode   = "Google Sheets ✓" if st.session_state.get("using_sheets") else "Session memory"
+    logo   = get_logo_b64()
     st.markdown(f"""
     <div class="topbar">
-        <img src="data:image/png;base64,{logo_b64}" style="height:46px;object-fit:contain;" alt="MPOnline Logo">
+        <img src="data:image/png;base64,{logo}" style="height:44px;object-fit:contain;" alt="MPOnline">
         <div class="topbar-right">
-            <strong style="color:white;font-size:0.9rem">VITS Attendance Intelligence</strong><br>
-            Skills Development Vertical &nbsp;·&nbsp; {total_sessions} sessions logged &nbsp;·&nbsp; {total_records:,} records
+            <div class="topbar-title">VITS Attendance Intelligence</div>
+            <div class="topbar-sub">
+                Skills Development Vertical
+                <span class="topbar-pill live">{sess} sessions · {recs:,} records</span>
+                <span class="topbar-pill">{mode}</span>
+            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
 
-# ── SIDEBAR ──────────────────────────────────────────────────────────────────
-def render_sidebar(master_df, batches_df):
+# ── SIDEBAR ───────────────────────────────────────────────────────────────────
+def render_sidebar(batches_df):
     with st.sidebar:
-        st.markdown("### ⚙️ Session Configuration")
-        st.caption("← Click arrow at screen edge to hide/show this panel")
+        st.markdown("### ⚙️ Session Setup")
         st.markdown("---")
 
-        batch_options = batches_df['Batch'].tolist()
-        batch_labels  = [f"{b}" for b in batch_options]
-        selected_batch_idx = st.selectbox(
-            "Batch", range(len(batch_options)),
-            format_func=lambda i: f"{batch_options[i]} — {PROG_SHORT.get(batches_df.iloc[i]['Program'], batches_df.iloc[i]['Program'][:30])}",
-            key="sidebar_batch"
+        batch_list = batches_df['Batch'].tolist()
+        sel_idx = st.selectbox(
+            "Batch",
+            range(len(batch_list)),
+            format_func=lambda i: f"{batch_list[i]}  —  {PROG_SHORT.get(batches_df.iloc[i]['Program'], batches_df.iloc[i]['Program'][:28])}",
+            key="sb_batch"
         )
-        selected_batch = batch_options[selected_batch_idx]
-        batch_row = batches_df[batches_df['Batch'] == selected_batch].iloc[0]
+        sel_batch = batch_list[sel_idx]
+        brow = batches_df[batches_df['Batch']==sel_batch].iloc[0]
 
         st.markdown(f"""
-        <div style="background:rgba(255,255,255,0.07);border-radius:8px;padding:12px 14px;margin:8px 0;font-size:0.8rem;line-height:1.8;">
-        <strong>Program:</strong> {PROG_SHORT.get(batch_row['Program'], batch_row['Program'])}<br>
-        <strong>SME:</strong> {batch_row['SME']}<br>
-        <strong>Timing:</strong> {batch_row['Timing']}<br>
-        <strong>Enrolled:</strong> {batch_row['Enrolled']} students
+        <div class="sb-info">
+        <strong>Program:</strong> {PROG_SHORT.get(brow['Program'], brow['Program'])}<br>
+        <strong>SME:</strong> {brow['SME']}<br>
+        <strong>Timing:</strong> {brow['Timing']}<br>
+        <strong>Enrolled:</strong> {brow['Enrolled']} students
         </div>
         """, unsafe_allow_html=True)
 
-        session_no   = st.number_input("Session Number", min_value=1, max_value=300, value=1, key="sidebar_session")
-        session_date = st.date_input("Session Date", value=date.today(), key="sidebar_date")
-        sched_dur    = st.number_input("Scheduled Duration (min)", min_value=30, max_value=360, value=120, step=15, key="sidebar_dur")
+        session_no   = st.number_input("Session Number", min_value=1, max_value=300, value=1, key="sb_sess")
+        session_date = st.date_input("Session Date", value=date.today(), key="sb_date")
+        sched_dur    = st.number_input("Scheduled Duration (min)", min_value=30, max_value=360, value=120, step=15, key="sb_dur")
         threshold_min = round(sched_dur * THRESHOLD_PCT)
 
         st.markdown(f"""
-        <div style="background:rgba(255,107,53,0.15);border:1px solid rgba(255,107,53,0.3);border-radius:8px;padding:10px 12px;margin-top:8px;font-size:0.78rem;line-height:1.8;">
-        <strong style="color:#FF6B35">Threshold:</strong> {threshold_min} min = {int(THRESHOLD_PCT*100)}% of {sched_dur} min<br>
-        <span style="color:rgba(255,255,255,0.5)">≥{threshold_min}m → Present &nbsp;|&nbsp; 1–{threshold_min-1}m → Late</span>
+        <div class="threshold-pill">
+        <strong>Threshold: {threshold_min} min</strong> = {int(THRESHOLD_PCT*100)}% of {sched_dur} min<br>
+        ≥{threshold_min} min → Present &nbsp;|&nbsp; 1–{threshold_min-1} min → Late
         </div>
         """, unsafe_allow_html=True)
 
         st.markdown("---")
-        st.markdown("### 📊 Quick Stats")
+
+        # Persistence status
+        if st.session_state.get("using_sheets"):
+            st.markdown("**💾 Storage:** Google Sheets")
+            st.caption("Data persists across sessions ✓")
+        else:
+            st.markdown("**⚠ Storage:** Session memory only")
+            st.caption("Data resets on page refresh. Set up Google Sheets to persist data.")
+
+        st.markdown("---")
         log_df = get_log()
-        total_rec = len(log_df)
-        total_sess = log_df['Session'].nunique() if not log_df.empty else 0
         st.markdown(f"""
-        <div style="font-size:0.82rem;line-height:2;">
-        Records logged: <strong>{total_rec:,}</strong><br>
-        Sessions committed: <strong>{total_sess}</strong><br>
-        Threshold: <strong>{int(THRESHOLD_PCT*100)}%</strong>
+        <div style="font-size:0.79rem;line-height:2;color:rgba(255,255,255,0.7)">
+        📋 Records: <strong style="color:white">{len(log_df):,}</strong><br>
+        📅 Sessions: <strong style="color:white">{log_df['Session'].nunique() if not log_df.empty else 0}</strong><br>
+        🎯 Threshold: <strong style="color:#FF6B35">{int(THRESHOLD_PCT*100)}%</strong>
         </div>
         """, unsafe_allow_html=True)
 
-        return selected_batch, int(session_no), session_date, int(sched_dur), threshold_min
+        return sel_batch, int(session_no), session_date, int(sched_dur), threshold_min
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — IMPORT & PROCESS
 # ══════════════════════════════════════════════════════════════════════════════
-def tab_import(master_df, selected_batch, session_no, session_date, sched_dur, threshold_min):
+def tab_import(master_df, sel_batch, session_no, session_date, sched_dur, threshold_min):
+    # Persistence banner
+    if st.session_state.get("using_sheets"):
+        st.markdown('<div class="persist-banner">💾 Google Sheets connected — all committed data is saved permanently and shared across the team.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="persist-banner warn">⚠ Running on session memory — data will reset on page refresh. Contact your admin to connect Google Sheets.</div>', unsafe_allow_html=True)
+
     st.markdown('<p class="sec-title">Import & Process Teams Attendance CSV</p>', unsafe_allow_html=True)
 
-    # Step indicator
     step = st.session_state.get('import_step', 1)
     st.markdown(f"""
     <div class="steps">
-        <div class="step {'done' if step>1 else 'active' if step==1 else ''}">1 · Upload CSV</div>
+        <div class="step {'done' if step>1 else 'active'}">1 · Upload CSV</div>
         <div class="step {'done' if step>2 else 'active' if step==2 else ''}">2 · Validate</div>
         <div class="step {'done' if step>3 else 'active' if step==3 else ''}">3 · Review</div>
-        <div class="step {'active' if step==4 else 'done' if step>4 else ''}">4 · Commit</div>
+        <div class="step {'active' if step==4 else 'done' if step>4 else ''}">4 · Done</div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Instructions
-    with st.expander("📖 How to get the CSV from Teams", expanded=(step == 1)):
+    with st.expander("📖 How to get the attendance CSV from Teams", expanded=(step==1)):
         st.markdown("""
-**After your class ends — follow these exact steps:**
-
+**After class ends:**
 1. Open **Microsoft Teams** → click **Calendar** in the left panel
-2. Find the meeting → click it to open details
-3. Click the **Recap** tab at the top
-4. Look for **Attendance** → click the **⬇ Download** button
-5. Save the `.csv` file to your computer
-6. **Rename it:** `BATCHCODE_DDMMYYYY.csv` → e.g. `B3A_25052026.csv`
-7. Upload it below ↓
+2. Find today's meeting → click it
+3. Click the **Recap** tab → find **Attendance** → click **⬇ Download**
+4. A `.csv` file downloads to your computer
+5. Upload it below
 
-> ⚠ **Wait ~5 minutes after the class before downloading** — Teams takes time to generate the full report.
+> ⚠ **Wait ~5 minutes after class** before downloading — Teams needs time to generate the full report.
         """)
-
-    # Upload
-    st.markdown('<p class="sec-title">Upload Teams CSV</p>', unsafe_allow_html=True)
 
     st.markdown(f"""
     <div class="upload-hint">
-    <strong>Session being processed:</strong> &nbsp;
-    Batch <strong>{selected_batch}</strong> &nbsp;·&nbsp;
+    <strong>Processing:</strong> &nbsp;
+    Batch <strong>{sel_batch}</strong> &nbsp;·&nbsp;
     Session <strong>{session_no}</strong> &nbsp;·&nbsp;
     Date <strong>{session_date.strftime('%d %b %Y')}</strong> &nbsp;·&nbsp;
-    Threshold <strong>{threshold_min} min</strong> ({int(THRESHOLD_PCT*100)}% of {sched_dur} min)<br>
-    <span style="font-size:0.78rem">Change these in the sidebar ←</span>
+    Threshold <strong>{threshold_min} min</strong> ({int(THRESHOLD_PCT*100)}% of {sched_dur} min)
+    <br><span style="font-size:0.76rem;color:#3B82F6">← Change batch/session/date in the left sidebar</span>
     </div>
     """, unsafe_allow_html=True)
 
     uploaded = st.file_uploader(
-        "Drop the Teams attendance CSV here",
-        type=['csv', 'txt'],
+        "Upload Teams CSV",
+        type=['csv','txt'],
         key="csv_upload",
         label_visibility="collapsed"
     )
@@ -598,195 +706,166 @@ def tab_import(master_df, selected_batch, session_no, session_date, sched_dur, t
         return
 
     st.session_state['import_step'] = 2
-
-    # Parse
-    text = uploaded.read().decode('utf-8-sig', errors='replace')
+    text     = uploaded.read().decode('utf-8-sig', errors='replace')
     raw_rows = parse_teams_csv(text)
 
     if not raw_rows:
-        st.markdown('<div class="alert alert-error">❌ No participants found in Section 2 of this CSV. Make sure you uploaded a Teams attendance report, not another file.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="alert alert-error">❌ No participants found. Make sure you uploaded a Teams attendance CSV and it contains a "2. Participants" section.</div>', unsafe_allow_html=True)
         return
 
-    # Process rows
-    processed = []
-    bot_count, unmatched = 0, 0
+    # Process
+    processed, bot_count, unmatched = [], 0, 0
+    batch_master = master_df[master_df['Batch']==sel_batch]
+
     for cols in raw_rows:
-        raw_name = cols[0] if len(cols) > 0 else ''
-        email    = cols[4] if len(cols) > 4 else ''
-        dur_raw  = cols[3] if len(cols) > 3 else ''
-
-        if is_excluded(raw_name, email):
-            bot_count += 1
-            continue
-
+        raw_name = cols[0] if len(cols)>0 else ''
+        email    = cols[4] if len(cols)>4 else ''
+        dur_raw  = cols[3] if len(cols)>3 else ''
+        if is_excluded(raw_name, email): bot_count += 1; continue
         dur_min  = parse_duration_minutes(dur_raw)
         cleaned  = clean_name(raw_name)
-        app_no   = match_student(raw_name, master_df[master_df['Batch'] == selected_batch])
-        if not app_no:
-            app_no = match_student(raw_name, master_df)  # try all batches
-        status   = status_label(dur_min, threshold_min)
-
-        if not app_no:
-            unmatched += 1
-
+        app_no   = match_student(raw_name, batch_master) or match_student(raw_name, master_df)
+        if not app_no: unmatched += 1
         processed.append({
-            'Date':       str(session_date),
-            'Batch':      selected_batch,
-            'Session':    session_no,
-            'App_No':     app_no or '',
-            'Raw_Name':   raw_name,
-            'Clean_Name': cleaned,
-            'Email':      email,
-            'Dur_Min':    dur_min,
-            'Dur_Raw':    dur_raw,
-            'Status':     status,
-            'Matched':    bool(app_no),
+            'Date':str(session_date),'Batch':sel_batch,'Session':session_no,
+            'App_No':app_no or '','Raw_Name':raw_name,'Clean_Name':cleaned,
+            'Email':email,'Dur_Min':dur_min,'Dur_Raw':dur_raw,
+            'Status':status_label(dur_min, threshold_min),'Matched':bool(app_no),
         })
 
     pending_df = pd.DataFrame(processed)
+    present_n  = (pending_df['Status']=='✅ Present').sum()
+    late_n     = (pending_df['Status']=='⚠ Late').sum()
+    absent_n   = (pending_df['Status']=='❌ Absent').sum()
 
-    # Validation summary
     st.markdown("---")
-    st.markdown('<p class="sec-title">Validation Report</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sec-title">Validation Results</p>', unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns(4)
-    present_n = (pending_df['Status'] == '✅ Present').sum()
-    late_n    = (pending_df['Status'] == '⚠ Late').sum()
-    absent_n  = (pending_df['Status'] == '❌ Absent').sum()
+    c1,c2,c3,c4 = st.columns(4)
+    with c1: st.markdown(f'<div class="kpi-card green"><div class="kpi-lbl">Present</div><div class="kpi-val">{present_n}</div><div class="kpi-sub">≥{threshold_min} min</div></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="kpi-card amber"><div class="kpi-lbl">Late</div><div class="kpi-val">{late_n}</div><div class="kpi-sub">< {threshold_min} min</div></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="kpi-card red"><div class="kpi-lbl">Absent</div><div class="kpi-val">{absent_n}</div><div class="kpi-sub">Not in report</div></div>', unsafe_allow_html=True)
+    with c4: st.markdown(f'<div class="kpi-card"><div class="kpi-lbl">Total</div><div class="kpi-val">{len(pending_df)}</div><div class="kpi-sub">{bot_count} bots excluded</div></div>', unsafe_allow_html=True)
 
-    with c1:
-        st.markdown(f'<div class="kpi-card green"><div class="kpi-lbl">Present</div><div class="kpi-val">{present_n}</div><div class="kpi-sub">≥{threshold_min} min</div></div>', unsafe_allow_html=True)
-    with c2:
-        st.markdown(f'<div class="kpi-card amber"><div class="kpi-lbl">Late</div><div class="kpi-val">{late_n}</div><div class="kpi-sub">< {threshold_min} min</div></div>', unsafe_allow_html=True)
-    with c3:
-        st.markdown(f'<div class="kpi-card red"><div class="kpi-lbl">Absent</div><div class="kpi-val">{absent_n}</div><div class="kpi-sub">Not in report</div></div>', unsafe_allow_html=True)
-    with c4:
-        st.markdown(f'<div class="kpi-card blue"><div class="kpi-lbl">Total</div><div class="kpi-val">{len(pending_df)}</div><div class="kpi-sub">{bot_count} bots excluded</div></div>', unsafe_allow_html=True)
-
-    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
     if bot_count:
-        st.markdown(f'<div class="alert alert-info">ℹ {bot_count} bot/staff entry(ies) automatically excluded (Otter.ai, Fireflies, mponline.gov.in).</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="alert alert-info">ℹ {bot_count} bot/staff entry(ies) excluded (Otter.ai, Fireflies, mponline.gov.in).</div>', unsafe_allow_html=True)
     if unmatched:
-        st.markdown(f'<div class="alert alert-warning">⚠ {unmatched} student name(s) could not be matched to Master Data. Check the "Matched?" column below — edit the Clean Name and re-run if needed.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="alert alert-warning">⚠ {unmatched} name(s) not matched to Master Data. Edit the "Clean Name" column below to fix, then commit.</div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="alert alert-success">✅ All {len(pending_df)} students matched to Master Data. Ready to commit.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="alert alert-success">✅ All {len(pending_df)} students matched successfully.</div>', unsafe_allow_html=True)
 
-    # Editable preview
     st.markdown("---")
-    st.markdown('<p class="sec-title">Preview & Edit Before Committing</p>', unsafe_allow_html=True)
-    st.caption("You can edit the 'Clean Name' column to fix any mismatches, then click Commit.")
+    st.markdown('<p class="sec-title">Preview — Edit Names to Fix Mismatches</p>', unsafe_allow_html=True)
 
     edit_df = pending_df[['Clean_Name','Raw_Name','Dur_Min','Dur_Raw','Status','Matched','App_No']].copy()
-    edit_df.columns = ['Clean Name (edit to fix)','Raw Name (from Teams)','Duration (min)','Duration (raw)','Status','Matched?','App No.']
-
+    edit_df.columns = ['Clean Name ✏','Raw Name (Teams)','Duration (min)','Duration (raw)','Status','Matched?','App No.']
     edited = st.data_editor(
         edit_df,
         use_container_width=True,
         hide_index=True,
-        disabled=['Raw Name (from Teams)','Duration (min)','Duration (raw)','Status','Matched?','App No.'],
+        disabled=['Raw Name (Teams)','Duration (min)','Duration (raw)','Status','Matched?','App No.'],
         column_config={
-            'Status': st.column_config.TextColumn('Status', width='medium'),
-            'Matched?': st.column_config.CheckboxColumn('Matched?', width='small'),
-            'Duration (min)': st.column_config.NumberColumn('Duration (min)', format='%.1f min', width='small'),
+            'Matched?':       st.column_config.CheckboxColumn(width='small'),
+            'Duration (min)': st.column_config.NumberColumn(format='%.1f min', width='small'),
+            'Status':         st.column_config.TextColumn(width='medium'),
         },
         key="edit_table"
     )
 
-    # Re-match after edits
-    pending_df['Clean_Name'] = edited['Clean Name (edit to fix)'].values
+    # Re-match after name edits
+    pending_df['Clean_Name'] = edited['Clean Name ✏'].values
     for i, row in pending_df.iterrows():
         if not row['Matched']:
-            new_app = match_student(row['Clean_Name'], master_df[master_df['Batch'] == selected_batch])
+            new_app = match_student(row['Clean_Name'], batch_master) or match_student(row['Clean_Name'], master_df)
             if new_app:
-                pending_df.at[i, 'App_No']  = new_app
-                pending_df.at[i, 'Matched'] = True
+                pending_df.at[i,'App_No']  = new_app
+                pending_df.at[i,'Matched'] = True
 
     st.session_state['pending_df'] = pending_df
     st.session_state['import_step'] = 3
 
-    # Commit button
     st.markdown("---")
-    col_commit, col_dl, _ = st.columns([2, 2, 4])
+    col_commit, col_dl, _ = st.columns([2,2,4])
+
     with col_commit:
         if st.button("✅ Commit to Attendance Log", type="primary", use_container_width=True):
             log_df = get_log()
-            # Check for existing session
+            # Duplicate check
             if not log_df.empty:
-                dup = log_df[(log_df['Batch'] == selected_batch) &
-                             (log_df['Session'] == session_no) &
-                             (log_df['Date'] == str(session_date))]
+                dup = log_df[(log_df['Batch']==sel_batch) &
+                             (log_df['Session'].astype(str)==str(session_no)) &
+                             (log_df['Date']==str(session_date))]
                 if not dup.empty:
-                    st.warning(f"Session {session_no} for {selected_batch} on {session_date} already exists. Remove it from the log first if you want to re-commit.")
+                    st.warning(f"⚠ Session {session_no} for {sel_batch} on {session_date} already exists. Delete it from the log first to re-commit.")
                     return
+
             commit_cols = ['Date','Batch','Session','App_No','Raw_Name','Clean_Name','Email','Dur_Min','Dur_Raw','Status','Matched']
-            append_log(pending_df[commit_cols])
+            rows_to_commit = pending_df[commit_cols].copy()
+            saved = append_log(rows_to_commit)
+
             st.session_state['import_step'] = 4
             st.session_state.pop('pending_df', None)
-            st.success(f"✅ {len(pending_df)} records committed for {selected_batch} Session {session_no} on {session_date}.")
-            st.balloons()
+            st.session_state['log_loaded'] = True  # keep loaded flag
+
+            if saved:
+                st.success(f"✅ {len(rows_to_commit)} records committed — {sel_batch} Session {session_no} on {session_date}")
+                st.balloons()
+            else:
+                st.warning("Records saved to session memory but Google Sheets sync failed. Check your Sheets configuration.")
 
     with col_dl:
         if st.session_state.get('pending_df') is not None:
-            csv_bytes = pending_df.to_csv(index=False).encode()
-            st.download_button(
-                "⬇ Download Processed CSV",
-                data=csv_bytes,
-                file_name=f"Processed_{selected_batch}_S{session_no}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+            csv_b = pending_df.to_csv(index=False).encode()
+            st.download_button("⬇ Download Processed CSV", data=csv_b,
+                               file_name=f"Processed_{sel_batch}_S{session_no}.csv",
+                               mime="text/csv", use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
-def tab_dashboard(master_df, batches_df):
+def tab_dashboard(batches_df):
+    log_df     = get_log()
+    summary_df = get_summary()
+    total_sess = log_df['Session'].nunique() if not log_df.empty else 0
+    eligible   = (summary_df['Status']=='✅ Eligible').sum()
+    atrisk     = (summary_df['Status']=='⚠ At Risk').sum()
+    fail       = (summary_df['Status']=='❌ Will Not Qualify').sum()
+
     st.markdown('<p class="sec-title">Overall Attendance Health</p>', unsafe_allow_html=True)
-
-    log_df = get_log()
-    summary_df = compute_summary(master_df, log_df)
-    total_sessions = log_df['Session'].nunique() if not log_df.empty else 0
-
-    eligible = (summary_df['Status'] == '✅ Eligible').sum()
-    atrisk   = (summary_df['Status'] == '⚠ At Risk').sum()
-    fail     = (summary_df['Status'] == '❌ Will Not Qualify').sum()
-    nodata   = (summary_df['Status'] == 'No Data').sum()
-
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    for col, label, val, sub, cls in [
-        (c1, "Enrollments",       "2,228",       "13 batches",         "blue"),
-        (c2, "Unique Students",   "1,523",       "705 multi-enrolled", "blue"),
-        (c3, "Sessions Logged",   str(total_sessions), "All batches",  ""),
-        (c4, "Eligible ≥75%",     str(eligible) if eligible else "—", "Certificate track", "green"),
-        (c5, "At Risk",           str(atrisk)   if atrisk else "—",   "50–74%",            "amber"),
-        (c6, "Will Not Qualify",  str(fail)     if fail else "—",     "Below 50%",         "red"),
-    ]:
+    c1,c2,c3,c4,c5,c6 = st.columns(6)
+    cards = [
+        (c1,"Enrollments","2,228","13 batches",""),
+        (c2,"Unique Students","1,523","705 multi-enrolled",""),
+        (c3,"Sessions Logged",str(total_sess),"All batches",""),
+        (c4,"Eligible ≥75%", str(eligible) if eligible else "—","Certificate track","green"),
+        (c5,"At Risk",        str(atrisk)   if atrisk  else "—","50–74%","amber"),
+        (c6,"Won't Qualify",  str(fail)     if fail    else "—","Below 50%","red"),
+    ]
+    for col,lbl,val,sub,cls in cards:
         with col:
-            st.markdown(f'<div class="kpi-card {cls}"><div class="kpi-lbl">{label}</div><div class="kpi-val">{val}</div><div class="kpi-sub">{sub}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kpi-card {cls}"><div class="kpi-lbl">{lbl}</div><div class="kpi-val">{val}</div><div class="kpi-sub">{sub}</div></div>', unsafe_allow_html=True)
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-
-    # Batch performance table
     st.markdown('<p class="sec-title">Batch Performance</p>', unsafe_allow_html=True)
 
     rows_html = ""
     for _, brow in batches_df.iterrows():
-        b = brow['Batch']
+        b        = brow['Batch']
         enrolled = int(brow['Enrolled'])
-        b_log    = log_df[log_df['Batch'] == b] if not log_df.empty else pd.DataFrame()
-        b_sess   = b_log['Session'].nunique() if not b_log.empty else 0
-        b_sum    = summary_df[summary_df['Batch'] == b]
-        elig     = (b_sum['Status'] == '✅ Eligible').sum()
-        risk     = (b_sum['Status'] == '⚠ At Risk').sum() + (b_sum['Status'] == '❌ Will Not Qualify').sum()
-        b_pct    = elig / enrolled if enrolled > 0 and b_sess > 0 else None
-        color    = "#1A7A4A" if b_pct and b_pct >= 0.75 else ("#E8920A" if b_pct and b_pct >= 0.50 else "#C0392B")
+        b_sess   = log_df[log_df['Batch']==b]['Session'].nunique() if not log_df.empty else 0
+        b_sum    = summary_df[summary_df['Batch']==b]
+        elig     = (b_sum['Status']=='✅ Eligible').sum()
+        risk     = ((b_sum['Status']=='⚠ At Risk')|(b_sum['Status']=='❌ Will Not Qualify')).sum()
+        b_pct    = elig/enrolled if enrolled>0 and b_sess>0 else None
+        color    = "#1A7A4A" if b_pct and b_pct>=0.75 else ("#E8920A" if b_pct and b_pct>=0.50 else "#C0392B")
         bar      = pct_bar_html(b_pct, color)
-
         rows_html += f"""<tr>
             <td><strong>{b}</strong></td>
-            <td style="font-size:0.78rem">{PROG_SHORT.get(brow['Program'], brow['Program'][:35])}</td>
-            <td style="font-size:0.78rem">{brow['SME']}</td>
+            <td style="font-size:0.79rem">{PROG_SHORT.get(brow['Program'],brow['Program'][:35])}</td>
+            <td style="font-size:0.79rem">{brow['SME']}</td>
             <td style="text-align:center;font-family:monospace">{enrolled}</td>
             <td style="text-align:center;font-family:monospace">{b_sess or '—'}</td>
             <td style="text-align:center;color:#1A7A4A;font-weight:700">{elig or '—'}</td>
@@ -795,8 +874,8 @@ def tab_dashboard(master_df, batches_df):
         </tr>"""
 
     st.markdown(f"""
-    <div class="tbl-wrap" style="overflow-x:auto;border-radius:10px;border:1px solid #E5E7EB;box-shadow:0 2px 10px rgba(27,58,107,0.07)">
-    <table class="styled-table" style="min-width:800px">
+    <div class="tbl-wrap">
+    <table class="styled-table" style="min-width:750px">
       <thead><tr>
         <th>Batch</th><th>Program</th><th>SME</th>
         <th style="text-align:center">Enrolled</th><th style="text-align:center">Sessions</th>
@@ -807,134 +886,114 @@ def tab_dashboard(master_df, batches_df):
     </table></div>
     """, unsafe_allow_html=True)
 
-    # Export button — generate only when clicked
+    # Export
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     if not log_df.empty:
-        if st.button("⬇ Generate & Export Full Excel Report", type="primary"):
-            try:
-                xl = export_excel(master_df, log_df, summary_df)
-                st.download_button(
-                    "⬇ Click here to download",
-                    data=xl,
-                    file_name=f"VITS_Attendance_{date.today().isoformat()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            except Exception as e:
-                st.error(f"Export error: {e}")
+        if st.button("📥 Generate Excel Report", type="primary"):
+            with st.spinner("Building report..."):
+                try:
+                    xl = export_excel(log_df, summary_df)
+                    st.download_button(
+                        "⬇ Download Excel",
+                        data=xl,
+                        file_name=f"VITS_Attendance_{date.today().isoformat()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                except Exception as e:
+                    st.error(f"Export error: {e}")
+    else:
+        st.markdown('<div class="empty-state"><div class="empty-icon">📊</div><h3>No data yet</h3><p>Import and commit a session to see the dashboard populate.</p></div>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — STUDENTS
 # ══════════════════════════════════════════════════════════════════════════════
-def tab_students(master_df, batches_df):
-    st.markdown('<p class="sec-title">Student Attendance Directory</p>', unsafe_allow_html=True)
-
+def tab_students(batches_df):
+    summary_df = get_summary()
     log_df     = get_log()
-    summary_df = compute_summary(master_df, log_df)
 
-    col_search, col_batch, col_status = st.columns([3, 2, 2])
-    with col_search:
-        q = st.text_input("🔍 Search name / ID / email", placeholder="Type to search...", label_visibility="collapsed")
-    with col_batch:
-        b_filter = st.selectbox("Batch", ["All"] + batches_df['Batch'].tolist(), label_visibility="collapsed")
-    with col_status:
-        s_filter = st.selectbox("Status", ["All Status", "✅ Eligible", "⚠ At Risk", "❌ Will Not Qualify", "No Data"], label_visibility="collapsed")
+    c1,c2,c3 = st.columns([3,2,2])
+    with c1: q  = st.text_input("🔍 Search name / ID / email", placeholder="Start typing...", label_visibility="collapsed", key="stu_q")
+    with c2: bf = st.selectbox("Batch",  ["All Batches"] + batches_df['Batch'].tolist(), label_visibility="collapsed", key="stu_bf")
+    with c3: sf = st.selectbox("Status", ["All Status","✅ Eligible","⚠ At Risk","❌ Will Not Qualify","No Data"], label_visibility="collapsed", key="stu_sf")
 
-    display_df = summary_df.copy()
-    if q:
-        mask = (display_df['Name'].str.lower().str.contains(q.lower()) |
-                display_df['App_No'].str.lower().str.contains(q.lower()) |
-                display_df['Email'].str.lower().str.contains(q.lower()))
-        display_df = display_df[mask]
-    if b_filter != "All":
-        display_df = display_df[display_df['Batch'] == b_filter]
-    if s_filter != "All Status":
-        display_df = display_df[display_df['Status'] == s_filter]
+    df = summary_df.copy()
+    if q:           df = df[df['Name'].str.lower().str.contains(q.lower()) | df['App_No'].str.lower().str.contains(q.lower()) | df['Email'].str.lower().str.contains(q.lower())]
+    if bf!="All Batches": df = df[df['Batch']==bf]
+    if sf!="All Status":  df = df[df['Status']==sf]
 
-    st.caption(f"Showing {len(display_df):,} of {len(summary_df):,} enrollment records")
+    st.caption(f"Showing {len(df):,} of {len(summary_df):,} enrollment records")
+
+    if df.empty:
+        st.markdown('<div class="empty-state"><div class="empty-icon">🔍</div><h3>No results</h3><p>Try different search or filter criteria.</p></div>', unsafe_allow_html=True)
+        return
 
     rows_html = ""
-    for _, row in display_df.head(250).iterrows():
+    for _, row in df.head(300).iterrows():
         bar = pct_bar_html(row['Attend_Pct'])
         rows_html += f"""<tr>
-            <td class="mono" style="font-family:monospace;font-size:0.76rem">{row['App_No']}</td>
+            <td style="font-family:monospace;font-size:0.75rem">{row['App_No']}</td>
             <td style="font-weight:600">{row['Name']}</td>
             <td style="font-family:monospace;font-size:0.8rem">{row['Batch']}</td>
             <td style="text-align:center;font-family:monospace">{row['Sessions_Held'] or '—'}</td>
             <td style="text-align:center;color:#1A7A4A;font-weight:700">{row['Present'] or '—'}</td>
             <td style="text-align:center;color:#C0392B;font-weight:700">{row['Absent'] or '—'}</td>
-            <td style="min-width:140px">{bar}</td>
+            <td style="min-width:130px">{bar}</td>
             <td>{badge_html(row['Status'])}</td>
         </tr>"""
 
     st.markdown(f"""
-    <div style="overflow-x:auto;border-radius:10px;border:1px solid #E5E7EB;box-shadow:0 2px 10px rgba(27,58,107,0.07)">
-    <table class="styled-table" style="min-width:750px">
+    <div class="tbl-wrap">
+    <table class="styled-table" style="min-width:700px">
       <thead><tr>
-        <th>App No.</th><th>Name</th><th>Batch</th><th style="text-align:center">Sessions</th>
-        <th style="text-align:center">Present</th><th style="text-align:center">Absent</th>
-        <th>Attendance %</th><th>Status</th>
+        <th>App No.</th><th>Name</th><th>Batch</th>
+        <th style="text-align:center">Sessions</th><th style="text-align:center">Present</th>
+        <th style="text-align:center">Absent</th><th>Attendance %</th><th>Status</th>
       </tr></thead>
       <tbody>{rows_html}</tbody>
     </table></div>
     """, unsafe_allow_html=True)
-
-    if len(display_df) > 250:
-        st.caption(f"Showing first 250 of {len(display_df)} results. Use filters to narrow down.")
+    if len(df)>300: st.caption(f"Showing first 300 of {len(df)} results. Use filters to narrow down.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — ATTENDANCE LOG
 # ══════════════════════════════════════════════════════════════════════════════
 def tab_log(batches_df):
-    st.markdown('<p class="sec-title">Full Attendance Log</p>', unsafe_allow_html=True)
-
     log_df = get_log()
     if log_df.empty:
-        st.markdown("""
-        <div style="text-align:center;padding:48px;color:#9CA3AF">
-            <div style="font-size:2.5rem;margin-bottom:12px">📋</div>
-            <strong style="color:#374151">No records yet</strong><br>
-            Import and commit a session to start building the log.
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="empty-state"><div class="empty-icon">📋</div><h3>No records yet</h3><p>Import and commit a session to start the log.</p></div>', unsafe_allow_html=True)
         return
 
-    c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-    with c1:
-        q = st.text_input("🔍", placeholder="Search name or batch...", label_visibility="collapsed")
-    with c2:
-        bf = st.selectbox("Batch", ["All"] + batches_df['Batch'].tolist(), key="log_bf", label_visibility="collapsed")
-    with c3:
-        sf = st.selectbox("Status", ["All", "✅ Present", "⚠ Late", "❌ Absent"], key="log_sf", label_visibility="collapsed")
-    with c4:
-        st.markdown(f"<div style='padding-top:8px;font-size:0.82rem;color:#6B7280'>{len(log_df):,} total records</div>", unsafe_allow_html=True)
+    c1,c2,c3,c4 = st.columns([3,2,2,2])
+    with c1: q  = st.text_input("🔍",placeholder="Search name or batch...",label_visibility="collapsed",key="log_q")
+    with c2: bf = st.selectbox("Batch",["All Batches"]+batches_df['Batch'].tolist(),label_visibility="collapsed",key="log_bf")
+    with c3: sf = st.selectbox("Status",["All","✅ Present","⚠ Late","❌ Absent"],label_visibility="collapsed",key="log_sf")
+    with c4: st.markdown(f"<div style='padding-top:8px;font-size:0.82rem;color:#6B7280'>{len(log_df):,} total records</div>", unsafe_allow_html=True)
 
-    filtered = log_df.copy().sort_values(['Date','Batch','Session'], ascending=[False,True,True])
-    if q:
-        filtered = filtered[filtered['Clean_Name'].str.lower().str.contains(q.lower()) |
-                            filtered['Batch'].str.lower().str.contains(q.lower())]
-    if bf != "All":
-        filtered = filtered[filtered['Batch'] == bf]
-    if sf != "All":
-        filtered = filtered[filtered['Status'] == sf]
+    filtered = log_df.copy()
+    try: filtered = filtered.sort_values(['Date','Batch','Session'],ascending=[False,True,True])
+    except: pass
+    if q:           filtered = filtered[filtered['Clean_Name'].str.lower().str.contains(q.lower(),na=False) | filtered['Batch'].str.lower().str.contains(q.lower(),na=False)]
+    if bf!="All Batches": filtered = filtered[filtered['Batch']==bf]
+    if sf!="All":   filtered = filtered[filtered['Status']==sf]
 
     display = filtered.head(500)
     rows_html = ""
     for _, row in display.iterrows():
         rows_html += f"""<tr>
-            <td style="font-family:monospace;font-size:0.76rem">{row['Date']}</td>
+            <td style="font-family:monospace;font-size:0.75rem">{row['Date']}</td>
             <td style="font-family:monospace;font-weight:700">{row['Batch']}</td>
             <td style="text-align:center;font-family:monospace">{row['Session']}</td>
             <td style="font-weight:500">{row['Clean_Name']}</td>
-            <td style="text-align:center;font-family:monospace">{row['Dur_Min']:.0f} min</td>
+            <td style="text-align:center;font-family:monospace">{float(row['Dur_Min']):.0f} min</td>
             <td>{badge_html(row['Status'])}</td>
-            <td style="font-size:0.75rem;color:#9CA3AF">{row['Email'] or '—'}</td>
+            <td style="font-size:0.74rem;color:#9CA3AF">{row.get('Email','') or '—'}</td>
         </tr>"""
 
     st.markdown(f"""
-    <div style="overflow-x:auto;border-radius:10px;border:1px solid #E5E7EB;box-shadow:0 2px 10px rgba(27,58,107,0.07)">
-    <table class="styled-table" style="min-width:700px">
+    <div class="tbl-wrap">
+    <table class="styled-table" style="min-width:680px">
       <thead><tr>
         <th>Date</th><th>Batch</th><th style="text-align:center">Session</th>
         <th>Name</th><th style="text-align:center">Duration</th><th>Status</th><th>Email</th>
@@ -943,60 +1002,56 @@ def tab_log(batches_df):
     </table></div>
     """, unsafe_allow_html=True)
 
-    if len(filtered) > 500:
-        st.caption(f"Showing 500 of {len(filtered)} filtered records.")
+    if len(filtered)>500: st.caption(f"Showing 500 of {len(filtered)} filtered records.")
 
-    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-    csv_bytes = log_df.to_csv(index=False).encode()
-    st.download_button("⬇ Download Full Log CSV", data=csv_bytes,
-                       file_name=f"AttendanceLog_{date.today().isoformat()}.csv", mime="text/csv")
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    col1, col2 = st.columns([2,6])
+    with col1:
+        csv_b = log_df.to_csv(index=False).encode()
+        st.download_button("⬇ Download Full Log", data=csv_b,
+                           file_name=f"AttendanceLog_{date.today().isoformat()}.csv", mime="text/csv")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — AT-RISK
 # ══════════════════════════════════════════════════════════════════════════════
-def tab_atrisk(master_df, batches_df):
-    st.markdown("""
-    <div class="alert alert-warning">⚠ Students below 75% attendance are at risk of losing their certificate. Review weekly and share with each SME and SPOC.</div>
-    """, unsafe_allow_html=True)
-
+def tab_atrisk(batches_df):
     log_df     = get_log()
-    summary_df = compute_summary(master_df, log_df)
+    summary_df = get_summary()
     risk_df    = summary_df[summary_df['Status'].isin(['⚠ At Risk','❌ Will Not Qualify'])].copy()
 
-    if risk_df.empty:
-        if log_df.empty:
-            st.markdown('<div class="alert alert-info">ℹ No attendance data committed yet. Import sessions first.</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="alert alert-success">🎉 No at-risk students. All enrolled students with data are on track.</div>', unsafe_allow_html=True)
+    if log_df.empty:
+        st.markdown('<div class="alert alert-info">ℹ Import and commit attendance sessions first. At-Risk report will auto-populate.</div>', unsafe_allow_html=True)
         return
 
-    c1, c2, c3 = st.columns([2, 2, 4])
-    with c1:
-        bf = st.selectbox("Filter by Batch", ["All"] + batches_df['Batch'].tolist(), key="risk_bf", label_visibility="collapsed")
-    with c2:
-        sf = st.selectbox("Filter by Status", ["All Risk", "⚠ At Risk", "❌ Will Not Qualify"], key="risk_sf", label_visibility="collapsed")
+    if risk_df.empty:
+        st.markdown('<div class="alert alert-success">🎉 No at-risk students — all students with data are on track for their certificate.</div>', unsafe_allow_html=True)
+        return
+
+    st.markdown(f'<div class="alert alert-warning">⚠ <strong>{len(risk_df)} students</strong> are below 75% attendance and at risk of losing their certificate. Share with each SME and college SPOC every Friday.</div>', unsafe_allow_html=True)
+
+    c1,c2,c3 = st.columns([2,2,4])
+    with c1: bf = st.selectbox("Batch",["All Batches"]+batches_df['Batch'].tolist(),label_visibility="collapsed",key="risk_bf")
+    with c2: sf = st.selectbox("Status",["All Risk","⚠ At Risk","❌ Will Not Qualify"],label_visibility="collapsed",key="risk_sf")
     with c3:
-        st.markdown(f"<div style='padding-top:8px;font-size:0.82rem;color:#C0392B;font-weight:700'>{len(risk_df)} students at risk</div>", unsafe_allow_html=True)
+        csv_b = risk_df.to_csv(index=False).encode()
+        st.download_button("⬇ Export At-Risk CSV", data=csv_b,
+                           file_name=f"AtRisk_{date.today().isoformat()}.csv", mime="text/csv", type="primary")
 
-    if bf != "All":
-        risk_df = risk_df[risk_df['Batch'] == bf]
-    if sf == "⚠ At Risk":
-        risk_df = risk_df[risk_df['Status'] == '⚠ At Risk']
-    elif sf == "❌ Will Not Qualify":
-        risk_df = risk_df[risk_df['Status'] == '❌ Will Not Qualify']
-
+    if bf!="All Batches": risk_df = risk_df[risk_df['Batch']==bf]
+    if sf=="⚠ At Risk":   risk_df = risk_df[risk_df['Status']=='⚠ At Risk']
+    elif sf=="❌ Will Not Qualify": risk_df = risk_df[risk_df['Status']=='❌ Will Not Qualify']
     risk_df = risk_df.sort_values('Attend_Pct', ascending=True)
 
     rows_html = ""
     for _, row in risk_df.iterrows():
         bar = pct_bar_html(row['Attend_Pct'])
         rows_html += f"""<tr>
-            <td style="font-family:monospace;font-size:0.76rem">{row['App_No']}</td>
+            <td style="font-family:monospace;font-size:0.75rem">{row['App_No']}</td>
             <td style="font-weight:600">{row['Name']}</td>
-            <td style="font-size:0.76rem;color:#9CA3AF">{row['Email'] or '—'}</td>
+            <td style="font-size:0.74rem;color:#9CA3AF">{row['Email'] or '—'}</td>
             <td style="font-family:monospace;font-weight:700">{row['Batch']}</td>
-            <td style="font-size:0.78rem">{PROG_SHORT.get(row['Program'], row['Program'][:28])}</td>
+            <td style="font-size:0.78rem">{PROG_SHORT.get(row['Program'],row['Program'][:28])}</td>
             <td style="font-size:0.78rem">{row['SME']}</td>
             <td style="text-align:center;font-family:monospace">{row['Sessions_Held']}</td>
             <td style="text-align:center;font-family:monospace">{row['Present']}</td>
@@ -1005,7 +1060,7 @@ def tab_atrisk(master_df, batches_df):
         </tr>"""
 
     st.markdown(f"""
-    <div style="overflow-x:auto;border-radius:10px;border:1px solid #FCA5A5;box-shadow:0 2px 10px rgba(192,57,43,0.08)">
+    <div class="tbl-wrap">
     <table class="styled-table" style="min-width:900px">
       <thead><tr>
         <th>App No.</th><th>Name</th><th>Email</th><th>Batch</th><th>Program</th><th>SME</th>
@@ -1016,133 +1071,113 @@ def tab_atrisk(master_df, batches_df):
     </table></div>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-
-    # Export at-risk
-    csv_bytes = risk_df.to_csv(index=False).encode()
-    st.download_button(
-        "⬇ Export At-Risk Report",
-        data=csv_bytes,
-        file_name=f"AtRisk_{date.today().isoformat()}.csv",
-        mime="text/csv",
-        type="primary"
-    )
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6 — AI INSIGHTS
 # ══════════════════════════════════════════════════════════════════════════════
-def tab_ai(master_df):
+def tab_ai():
+    log_df     = get_log()
+    summary_df = get_summary()
+    batches    = load_batches()
+
+    total_sess = log_df['Session'].nunique() if not log_df.empty else 0
+    eligible   = (summary_df['Status']=='✅ Eligible').sum()
+    atrisk     = (summary_df['Status']=='⚠ At Risk').sum()
+    fail       = (summary_df['Status']=='❌ Will Not Qualify').sum()
+    nodata     = (summary_df['Status']=='No Data').sum()
+
+    batch_lines = []
+    for _, brow in batches.iterrows():
+        b     = brow['Batch']
+        b_log = log_df[log_df['Batch']==b] if not log_df.empty else pd.DataFrame()
+        b_s   = b_log['Session'].nunique() if not b_log.empty else 0
+        b_sum = summary_df[summary_df['Batch']==b]
+        be    = (b_sum['Status']=='✅ Eligible').sum()
+        br    = ((b_sum['Status']=='⚠ At Risk')|(b_sum['Status']=='❌ Will Not Qualify')).sum()
+        batch_lines.append(f"{b} ({PROG_SHORT.get(brow['Program'],brow['Program'][:25])}, {brow['SME']}): {brow['Enrolled']} enrolled, {b_s} sessions, {be} eligible, {br} at-risk")
+
+    context = f"""You are an attendance analytics assistant for MPOnline Ltd. (Govt. of MP + TCS JV), helping Palash Jaiswal manage internship/certificate attendance at VITS Bhopal.
+
+DATA:
+- Enrollments: 2,228 across 13 batches (1,523 unique, 705 multi-enrolled)
+- Sessions logged: {total_sess} | Records: {len(log_df)}
+- Eligible (≥75%): {eligible} | At Risk (50-74%): {atrisk} | Won't Qualify (<50%): {fail} | No data: {nodata}
+
+BATCHES:
+{chr(10).join(batch_lines)}
+
+Programs: SE+AI Foundation, Advanced Software Engineering, AI/ML, Digital Marketing.
+Certificate = ≥75% attendance. No refund policy. Be direct, specific, actionable."""
+
     st.markdown("""
     <div class="ai-wrap">
         <div class="ai-label">Powered by Claude · Anthropic</div>
-        <div class="ai-title">Attendance Intelligence Assistant</div>
-        <div class="ai-sub">Ask questions, get summaries, identify patterns, and plan follow-up actions.</div>
+        <div class="ai-title">🤖 Attendance Intelligence Assistant</div>
+        <div class="ai-sub">Ask questions, get summaries, identify at-risk patterns, plan next steps.</div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-    log_df     = get_log()
-    summary_df = compute_summary(master_df, log_df)
-
-    # Context for Claude
-    total_sessions = log_df['Session'].nunique() if not log_df.empty else 0
-    eligible = (summary_df['Status'] == '✅ Eligible').sum()
-    atrisk   = (summary_df['Status'] == '⚠ At Risk').sum()
-    fail     = (summary_df['Status'] == '❌ Will Not Qualify').sum()
-    nodata   = (summary_df['Status'] == 'No Data').sum()
-
-    batch_lines = []
-    for _, brow in load_batches().iterrows():
-        b = brow['Batch']
-        b_log = log_df[log_df['Batch'] == b] if not log_df.empty else pd.DataFrame()
-        b_sess = b_log['Session'].nunique() if not b_log.empty else 0
-        b_sum  = summary_df[summary_df['Batch'] == b]
-        be = (b_sum['Status'] == '✅ Eligible').sum()
-        br = ((b_sum['Status'] == '⚠ At Risk') | (b_sum['Status'] == '❌ Will Not Qualify')).sum()
-        batch_lines.append(f"{b} ({PROG_SHORT.get(brow['Program'], brow['Program'][:30])}, SME: {brow['SME']}): "
-                           f"{brow['Enrolled']} enrolled, {b_sess} sessions, {be} eligible, {br} at-risk/fail")
-
-    context = f"""You are an attendance analytics assistant for MPOnline Ltd., a Govt. of Madhya Pradesh and TCS joint venture.
-You are helping Palash Jaiswal, Associate Consultant in the Skills Development vertical, manage internship/certificate program attendance at VITS Bhopal.
-
-CURRENT DATA:
-- Total enrollments: 2,228 across 13 batches (1,523 unique students, 705 multi-enrolled)
-- Sessions logged: {total_sessions}
-- Attendance records: {len(log_df)}
-- Eligible (≥75%): {eligible}
-- At Risk (50–74%): {atrisk}
-- Will Not Qualify (<50%): {fail}
-- No data yet: {nodata}
-
-BATCH SUMMARIES:
-{chr(10).join(batch_lines)}
-
-Programs: SE+AI Foundation, Advanced Software Engineering, AI/ML Internship, Digital Marketing Internship.
-Certificate requires ≥75% attendance. No refund policy.
-
-Be direct, specific, and actionable. Use bullet points where helpful. Reference specific batch codes and numbers."""
-
-    # Quick-ask buttons
-    st.markdown('<p class="sec-title">Quick Questions</p>', unsafe_allow_html=True)
-    q_cols = st.columns(5)
-    quick_questions = {
-        "📊 Summary":         "Give me a concise attendance health summary across all 13 batches.",
-        "🔍 Worst batches":   "Which batches have the worst attendance and what are likely causes?",
-        "🚨 At-Risk":         "How many students risk losing their certificate and which batches need urgent attention?",
-        "💡 Actions":         "What are the 3 most important actions I should take this week based on attendance data?",
-        "📧 SPOC Message":    "Draft a short WhatsApp message to a college SPOC about students who are at risk of losing their certificate.",
+    quick = {
+        "📊 Summary":        "Give me a concise attendance health summary across all 13 batches.",
+        "🔍 Worst Batches":  "Which batches have the worst attendance rates and what are likely causes?",
+        "🚨 At-Risk":        "How many students risk losing their certificate? Which batches need urgent attention?",
+        "💡 This Week":      "What are the 3 most important actions I should take this week?",
+        "📩 SPOC Message":   "Draft a WhatsApp message to a college SPOC about students who are at risk of losing their certificate.",
     }
-
+    cols = st.columns(5)
     clicked_q = None
-    for col, (label, question) in zip(q_cols, quick_questions.items()):
+    for col, (label, question) in zip(cols, quick.items()):
         with col:
-            if st.button(label, use_container_width=True):
+            if st.button(label, use_container_width=True, key=f"ai_quick_{label}"):
                 clicked_q = question
 
-    # Chat input
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-    user_input = st.text_input("Ask anything about the attendance data...", key="ai_input", label_visibility="collapsed",
-                                placeholder="e.g. Which students in B3(A) have below 50% attendance?")
-    send_btn = st.button("Send →", type="primary")
-
-    question = clicked_q or (user_input if send_btn else None)
+    user_q = st.text_input("Or type your own question...", key="ai_input",
+                           placeholder="e.g. Which students in B3(A) have below 50%?",
+                           label_visibility="collapsed")
+    send   = st.button("Send →", type="primary", key="ai_send")
+    question = clicked_q or (user_q if send and user_q else None)
 
     if question:
-        api_key = os.environ.get("ANTHROPIC_API_KEY") or st.secrets.get("ANTHROPIC_API_KEY", "")
+        try:
+            api_key = st.secrets.get("ANTHROPIC_API_KEY","")
+        except Exception:
+            api_key = ""
+
         if not api_key:
-            st.markdown('<div class="alert alert-warning">⚠ No Anthropic API key found. Add ANTHROPIC_API_KEY to your Streamlit secrets to enable AI Insights.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="alert alert-warning">⚠ No Anthropic API key configured. Add ANTHROPIC_API_KEY to Streamlit Secrets to enable AI Insights.</div>', unsafe_allow_html=True)
             return
 
-        with st.spinner("Analysing attendance data..."):
+        with st.spinner("Analysing..."):
             try:
                 client = anthropic.Anthropic(api_key=api_key)
-                msg = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=1000,
+                msg    = client.messages.create(
+                    model="claude-sonnet-4-20250514", max_tokens=1000,
                     system=context,
-                    messages=[{"role": "user", "content": question}]
+                    messages=[{"role":"user","content":question}]
                 )
                 answer = msg.content[0].text
                 st.markdown(f"""
-                <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:18px;margin-top:14px;line-height:1.75;font-size:0.88rem;white-space:pre-wrap">{answer}</div>
+                <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;
+                            padding:18px;margin-top:14px;line-height:1.8;
+                            font-size:0.87rem;white-space:pre-wrap">{answer}</div>
                 """, unsafe_allow_html=True)
             except Exception as e:
-                st.markdown(f'<div class="alert alert-error">❌ API error: {str(e)}</div>', unsafe_allow_html=True)
+                st.error(f"API error: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
-    init_log()
     master_df  = load_master()
     batches_df = load_batches()
+    init_log()
 
     render_topbar()
 
-    selected_batch, session_no, session_date, sched_dur, threshold_min = render_sidebar(master_df, batches_df)
+    sel_batch, session_no, session_date, sched_dur, threshold_min = render_sidebar(batches_df)
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📥  Import & Process",
@@ -1153,18 +1188,12 @@ def main():
         "🤖  AI Insights",
     ])
 
-    with tab1:
-        tab_import(master_df, selected_batch, session_no, session_date, sched_dur, threshold_min)
-    with tab2:
-        tab_dashboard(master_df, batches_df)
-    with tab3:
-        tab_students(master_df, batches_df)
-    with tab4:
-        tab_log(batches_df)
-    with tab5:
-        tab_atrisk(master_df, batches_df)
-    with tab6:
-        tab_ai(master_df)
+    with tab1: tab_import(master_df, sel_batch, session_no, session_date, sched_dur, threshold_min)
+    with tab2: tab_dashboard(batches_df)
+    with tab3: tab_students(batches_df)
+    with tab4: tab_log(batches_df)
+    with tab5: tab_atrisk(batches_df)
+    with tab6: tab_ai()
 
 
 if __name__ == "__main__":

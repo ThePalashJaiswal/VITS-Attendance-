@@ -262,17 +262,21 @@ def get_gsheet_client():
         import gspread
         from google.oauth2.service_account import Credentials
         creds_dict = dict(st.secrets["gcp_service_account"])
+        # Repair private_key newlines — common paste issue
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
         scopes = ["https://spreadsheets.google.com/feeds",
                   "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
-    except Exception:
+    except Exception as e:
+        st.session_state["gsheet_error"] = str(e)
         return None
 
 def get_sheet(client, sheet_name="Attendance Log"):
     """Return the worksheet, creating it if needed."""
     try:
-        sheet_id = st.secrets.get("GSHEET_ID", "")
+        sheet_id = st.secrets.get("GSHEET_ID", "").strip()
         if not sheet_id:
             return None
         sh = client.open_by_key(sheet_id)
@@ -282,7 +286,8 @@ def get_sheet(client, sheet_name="Attendance Log"):
             ws = sh.add_worksheet(title=sheet_name, rows=5000, cols=len(LOG_COLS))
             ws.append_row(LOG_COLS)
             return ws
-    except Exception:
+    except Exception as e:
+        st.session_state["gsheet_error"] = str(e)
         return None
 
 def load_log_from_sheet():
@@ -298,7 +303,8 @@ def load_log_from_sheet():
         if not data:
             return pd.DataFrame(columns=LOG_COLS)
         return pd.DataFrame(data)
-    except Exception:
+    except Exception as e:
+        st.session_state["gsheet_error"] = str(e)
         return None
 
 def save_rows_to_sheet(rows_df):
@@ -577,36 +583,33 @@ def render_topbar():
     log_df = get_log()
     sess   = log_df['Session'].nunique() if not log_df.empty else 0
     recs   = len(log_df)
-    mode   = "Google Sheets ✓" if st.session_state.get("using_sheets") else "Session memory"
+    using  = st.session_state.get("using_sheets", False)
+    mode_color = "#4ADE80" if using else "#FBBF24"
+    mode_text  = "Google Sheets connected" if using else "Session memory"
     logo   = get_logo_b64()
 
-    col_logo, col_info = st.columns([3, 2])
-    with col_logo:
-        st.markdown(
-            f'<img src="data:image/png;base64,{logo}" ' 
-            f'style="width:100%;max-width:420px;height:auto;display:block;" alt="MPOnline">',
-            unsafe_allow_html=True
-        )
-    with col_info:
-        st.markdown(f"""
-        <div style="background:linear-gradient(90deg,#1B3A6B,#2E5FA3);
-                    border-radius:10px;padding:14px 20px;text-align:right;height:100%;
-                    display:flex;flex-direction:column;justify-content:center;">
-            <div style="font-size:1rem;font-weight:700;color:white;">VITS Attendance Intelligence</div>
-            <div style="font-size:0.72rem;color:rgba(255,255,255,0.6);margin-top:4px;">
+    st.markdown(f"""
+    <div style="background:linear-gradient(90deg,#0D1B2A 0%,#1B3A6B 60%,#2E5FA3 100%);
+                border-radius:12px;padding:14px 24px;margin-bottom:18px;
+                box-shadow:0 4px 20px rgba(27,58,107,0.22);
+                display:flex;align-items:center;justify-content:space-between;gap:20px;">
+        <div style="background:white;border-radius:8px;padding:8px 14px;display:inline-flex;align-items:center;">
+            <img src="data:image/png;base64,{logo}" style="height:38px;width:auto;display:block;" alt="MPOnline">
+        </div>
+        <div style="text-align:right;flex:1;">
+            <div style="font-size:1rem;font-weight:700;color:white;line-height:1.2;">VITS Attendance Intelligence</div>
+            <div style="font-size:0.72rem;color:rgba(255,255,255,0.6);margin-top:5px;">
                 Skills Development Vertical &nbsp;·&nbsp;
-                <span style="background:rgba(255,255,255,0.15);border-radius:20px;
-                             padding:2px 10px;color:rgba(255,255,255,0.85);">
-                    ● {sess} sessions · {recs:,} records
+                <span style="background:rgba(255,255,255,0.14);border-radius:20px;padding:3px 11px;color:rgba(255,255,255,0.9);">
+                    {sess} sessions · {recs:,} records
                 </span>
-                <span style="background:rgba(255,255,255,0.10);border-radius:20px;
-                             padding:2px 10px;color:rgba(255,255,255,0.7);margin-left:4px;">
-                    {mode}
+                <span style="background:rgba(255,255,255,0.10);border-radius:20px;padding:3px 11px;margin-left:5px;color:{mode_color};font-weight:600;">
+                    ● {mode_text}
                 </span>
             </div>
         </div>
-        """, unsafe_allow_html=True)
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
@@ -685,15 +688,22 @@ def render_sidebar(batches_df):
                 st.write("**using_sheets flag:**", st.session_state.get("using_sheets", "not set"))
                 
                 if configured:
-                    st.success("✅ Config looks correct")
-                    if st.button("🔄 Force reconnect to Sheets"):
-                        if "att_log" in st.session_state:
-                            del st.session_state["att_log"]
-                        if "using_sheets" in st.session_state:
-                            del st.session_state["using_sheets"]
-                        st.rerun()
+                    st.success("✅ Config detected")
                 else:
-                    st.error("❌ Config incomplete — check above")
+                    st.error("❌ Config incomplete — GSHEET_ID must be the ID only (not a URL)")
+
+                # Show last connection error if any
+                err = st.session_state.get("gsheet_error")
+                if err:
+                    st.error(f"**Last error:** {err[:300]}")
+
+                if st.button("🔄 Test connection to Sheets"):
+                    st.session_state.pop("gsheet_error", None)
+                    if "att_log" in st.session_state:
+                        del st.session_state["att_log"]
+                    if "using_sheets" in st.session_state:
+                        del st.session_state["using_sheets"]
+                    st.rerun()
             except Exception as e:
                 st.error(f"Debug error: {e}")
 

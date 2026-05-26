@@ -257,38 +257,74 @@ def get_logo_b64():
 
 # ── GOOGLE SHEETS PERSISTENCE ─────────────────────────────────────────────────
 def get_gsheet_client():
-    """Return authorised gspread client using service account from secrets."""
+    """Return authorised gspread client. Supports both JSON string and TOML dict secrets."""
     try:
         import gspread
+        import json
         from google.oauth2.service_account import Credentials
+
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+
+        # Method 1: GCP_SERVICE_ACCOUNT_JSON — raw JSON string (most reliable)
+        json_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON", "")
+        if json_str:
+            creds_dict = json.loads(json_str)
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            st.session_state.pop("gsheet_error", None)
+            return gspread.authorize(creds)
+
+        # Method 2: gcp_service_account TOML section (fix newlines)
         creds_dict = dict(st.secrets["gcp_service_account"])
-        # Repair private_key newlines — common paste issue
-        if "private_key" in creds_dict:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        scopes = ["https://spreadsheets.google.com/feeds",
-                  "https://www.googleapis.com/auth/drive"]
+        pk = str(creds_dict.get("private_key", ""))
+        # Repair escaped newlines from TOML pasting
+        pk = pk.replace("\\n", "\n")
+        if "\\n" not in pk and "\n" in pk:
+            pass  # already has real newlines
+        creds_dict["private_key"] = pk
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        return gspread.authorize(creds)
+        client = gspread.authorize(creds)
+        st.session_state.pop("gsheet_error", None)
+        return client
+
     except Exception as e:
-        st.session_state["gsheet_error"] = str(e)
+        st.session_state["gsheet_error"] = f"{type(e).__name__}: {str(e)[:200]}"
         return None
 
 def get_sheet(client, sheet_name="Attendance Log"):
     """Return the worksheet, creating it if needed."""
+    sheet_id = st.secrets.get("GSHEET_ID", "").strip()
+    if not sheet_id:
+        st.session_state["gsheet_error"] = "GSHEET_ID is empty"
+        return None
+    sh = None
+    # Try open_by_key first
     try:
-        sheet_id = st.secrets.get("GSHEET_ID", "").strip()
-        if not sheet_id:
-            return None
         sh = client.open_by_key(sheet_id)
+    except Exception as e1:
+        # Fallback: open_by_url
         try:
-            return sh.worksheet(sheet_name)
-        except Exception:
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+            sh = client.open_by_url(url)
+        except Exception as e2:
+            st.session_state["gsheet_error"] = (
+                f"Cannot open Sheet (404 = check Drive API is enabled AND Sheet is shared "
+                f"with the bot email). key_err={e1} | url_err={e2}"
+            )
+            return None
+    # Get or create the worksheet tab
+    try:
+        return sh.worksheet(sheet_name)
+    except Exception:
+        try:
             ws = sh.add_worksheet(title=sheet_name, rows=5000, cols=len(LOG_COLS))
             ws.append_row(LOG_COLS)
             return ws
-    except Exception as e:
-        st.session_state["gsheet_error"] = str(e)
-        return None
+        except Exception as e:
+            st.session_state["gsheet_error"] = f"Worksheet create failed: {e}"
+            return None
 
 def load_log_from_sheet():
     """Load attendance log from Google Sheet → DataFrame."""

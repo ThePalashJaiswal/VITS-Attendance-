@@ -257,7 +257,7 @@ def get_logo_b64():
 
 # ── GOOGLE SHEETS PERSISTENCE ─────────────────────────────────────────────────
 def get_gsheet_client():
-    """Return authorised gspread client. Supports both JSON string and TOML dict secrets."""
+    """Return authorised gspread client using service_account.json file in data/."""
     try:
         import gspread
         import json
@@ -268,21 +268,20 @@ def get_gsheet_client():
             "https://www.googleapis.com/auth/drive",
         ]
 
-        # Method 1: GCP_SERVICE_ACCOUNT_JSON — raw JSON string (most reliable)
-        json_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON", "")
-        if json_str:
-            creds_dict = json.loads(json_str)
+        # Primary: read service_account.json from data/ folder
+        sa_path = os.path.join(DATA_DIR, "service_account.json")
+        if os.path.exists(sa_path):
+            with open(sa_path, "r") as f:
+                creds_dict = json.load(f)
             creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            client = gspread.authorize(creds)
             st.session_state.pop("gsheet_error", None)
-            return gspread.authorize(creds)
+            return client
 
-        # Method 2: gcp_service_account TOML section (fix newlines)
+        # Fallback: TOML secrets
         creds_dict = dict(st.secrets["gcp_service_account"])
         pk = str(creds_dict.get("private_key", ""))
-        # Repair escaped newlines from TOML pasting
         pk = pk.replace("\\n", "\n")
-        if "\\n" not in pk and "\n" in pk:
-            pass  # already has real newlines
         creds_dict["private_key"] = pk
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         client = gspread.authorize(creds)
@@ -290,7 +289,7 @@ def get_gsheet_client():
         return client
 
     except Exception as e:
-        st.session_state["gsheet_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        st.session_state["gsheet_error"] = f"{type(e).__name__}: {str(e)[:300]}"
         return None
 
 def get_sheet(client, sheet_name="Attendance Log"):
@@ -360,12 +359,18 @@ def save_rows_to_sheet(rows_df):
         return False
 
 def has_sheets_configured():
-    """Check if Google Sheets secrets are present and valid."""
+    """Check if Google Sheets is configured via JSON file or TOML secrets."""
     try:
+        # Check for JSON file in data/
+        sa_path = os.path.join(DATA_DIR, "service_account.json")
+        has_json_file = os.path.exists(sa_path)
+
+        # Check TOML secrets
         sheet_id = st.secrets.get("GSHEET_ID", "")
         has_sa   = "gcp_service_account" in st.secrets
         valid_id = bool(sheet_id) and not sheet_id.startswith("http") and len(sheet_id) > 10
-        return valid_id and has_sa
+
+        return (has_json_file or has_sa) and valid_id
     except Exception:
         return False
 
@@ -708,6 +713,8 @@ def render_sidebar(batches_df):
         # ── DEBUG: show secrets status ──
         with st.expander("🔧 Connection Debug — CLICK HERE", expanded=True):
             try:
+                sa_path = os.path.join(DATA_DIR, "service_account.json")
+                st.write("**service_account.json exists:**", os.path.exists(sa_path))
                 all_keys = list(st.secrets.keys())
                 st.write("**Secret keys found:**", all_keys)
                 

@@ -14,7 +14,7 @@ st.set_page_config(
     page_title="VITS Attendance · MPOnline",
     page_icon="🎓",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded",  # always open
 )
 
 # ── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -488,6 +488,7 @@ def render_topbar():
 def render_sidebar(master_df, batches_df):
     with st.sidebar:
         st.markdown("### ⚙️ Session Configuration")
+        st.caption("← Click arrow at screen edge to hide/show this panel")
         st.markdown("---")
 
         batch_options = batches_df['Batch'].tolist()

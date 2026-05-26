@@ -101,12 +101,13 @@ section[data-testid="stSidebar"] .stSelectbox svg { fill: white !important; }
 .topbar {
     background: linear-gradient(90deg, #0D1B2A 0%, #1B3A6B 60%, #2E5FA3 100%);
     border-radius: 12px;
-    padding: 12px 24px;
+    padding: 10px 24px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     margin-bottom: 18px;
     box-shadow: 0 4px 20px rgba(27,58,107,0.22);
+    min-height: 72px;
 }
 .topbar-right { text-align: right; line-height: 1.5; }
 .topbar-title { font-size: 0.95rem; font-weight: 700; color: white; }
@@ -317,9 +318,12 @@ def save_rows_to_sheet(rows_df):
         return False
 
 def has_sheets_configured():
-    """Check if Google Sheets secrets are present."""
+    """Check if Google Sheets secrets are present and valid."""
     try:
-        return bool(st.secrets.get("GSHEET_ID")) and bool(st.secrets.get("gcp_service_account"))
+        sheet_id = st.secrets.get("GSHEET_ID", "")
+        has_sa   = "gcp_service_account" in st.secrets
+        valid_id = bool(sheet_id) and not sheet_id.startswith("http") and len(sheet_id) > 10
+        return valid_id and has_sa
     except Exception:
         return False
 
@@ -327,19 +331,21 @@ def has_sheets_configured():
 # ── SESSION STATE — LOG ───────────────────────────────────────────────────────
 def init_log():
     """Load from Google Sheets if configured, else use session memory."""
-    if "log_loaded" not in st.session_state:
-        st.session_state["log_loaded"] = False
+    sheets_ok = has_sheets_configured()
 
-    if not st.session_state["log_loaded"]:
-        if has_sheets_configured():
-            df = load_log_from_sheet()
-            st.session_state["att_log"] = df if df is not None else pd.DataFrame(columns=LOG_COLS)
-            st.session_state["using_sheets"] = df is not None
+    # First load this session — pull from Sheets if configured
+    if "att_log" not in st.session_state:
+        if sheets_ok:
+            with st.spinner("Loading attendance data from Google Sheets..."):
+                df = load_log_from_sheet()
+            st.session_state["att_log"]       = df if df is not None else pd.DataFrame(columns=LOG_COLS)
+            st.session_state["using_sheets"]  = df is not None
         else:
-            if "att_log" not in st.session_state:
-                st.session_state["att_log"] = pd.DataFrame(columns=LOG_COLS)
-            st.session_state["using_sheets"] = False
-        st.session_state["log_loaded"] = True
+            st.session_state["att_log"]       = pd.DataFrame(columns=LOG_COLS)
+            st.session_state["using_sheets"]  = False
+    else:
+        # Already loaded this session — just update sheets flag
+        st.session_state["using_sheets"] = sheets_ok and st.session_state.get("using_sheets", False)
 
 def get_log():
     return st.session_state.get("att_log", pd.DataFrame(columns=LOG_COLS))
@@ -575,7 +581,7 @@ def render_topbar():
     logo   = get_logo_b64()
     st.markdown(f"""
     <div class="topbar">
-        <img src="data:image/png;base64,{logo}" style="height:44px;object-fit:contain;" alt="MPOnline">
+        <img src="data:image/png;base64,{logo}" style="max-height:56px;width:auto;object-fit:contain;display:block;" alt="MPOnline">
         <div class="topbar-right">
             <div class="topbar-title">VITS Attendance Intelligence</div>
             <div class="topbar-sub">

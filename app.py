@@ -101,13 +101,13 @@ section[data-testid="stSidebar"] .stSelectbox svg { fill: white !important; }
 .topbar {
     background: linear-gradient(90deg, #0D1B2A 0%, #1B3A6B 60%, #2E5FA3 100%);
     border-radius: 12px;
-    padding: 10px 24px;
+    padding: 16px 28px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     margin-bottom: 18px;
     box-shadow: 0 4px 20px rgba(27,58,107,0.22);
-    min-height: 72px;
+    overflow: visible;
 }
 .topbar-right { text-align: right; line-height: 1.5; }
 .topbar-title { font-size: 0.95rem; font-weight: 700; color: white; }
@@ -579,19 +579,34 @@ def render_topbar():
     recs   = len(log_df)
     mode   = "Google Sheets ✓" if st.session_state.get("using_sheets") else "Session memory"
     logo   = get_logo_b64()
-    st.markdown(f"""
-    <div class="topbar">
-        <img src="data:image/png;base64,{logo}" style="max-height:56px;width:auto;object-fit:contain;display:block;" alt="MPOnline">
-        <div class="topbar-right">
-            <div class="topbar-title">VITS Attendance Intelligence</div>
-            <div class="topbar-sub">
-                Skills Development Vertical
-                <span class="topbar-pill live">{sess} sessions · {recs:,} records</span>
-                <span class="topbar-pill">{mode}</span>
+
+    col_logo, col_info = st.columns([3, 2])
+    with col_logo:
+        st.markdown(
+            f'<img src="data:image/png;base64,{logo}" ' 
+            f'style="width:100%;max-width:420px;height:auto;display:block;" alt="MPOnline">',
+            unsafe_allow_html=True
+        )
+    with col_info:
+        st.markdown(f"""
+        <div style="background:linear-gradient(90deg,#1B3A6B,#2E5FA3);
+                    border-radius:10px;padding:14px 20px;text-align:right;height:100%;
+                    display:flex;flex-direction:column;justify-content:center;">
+            <div style="font-size:1rem;font-weight:700;color:white;">VITS Attendance Intelligence</div>
+            <div style="font-size:0.72rem;color:rgba(255,255,255,0.6);margin-top:4px;">
+                Skills Development Vertical &nbsp;·&nbsp;
+                <span style="background:rgba(255,255,255,0.15);border-radius:20px;
+                             padding:2px 10px;color:rgba(255,255,255,0.85);">
+                    ● {sess} sessions · {recs:,} records
+                </span>
+                <span style="background:rgba(255,255,255,0.10);border-radius:20px;
+                             padding:2px 10px;color:rgba(255,255,255,0.7);margin-left:4px;">
+                    {mode}
+                </span>
             </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
@@ -650,6 +665,37 @@ def render_sidebar(batches_df):
         🎯 Threshold: <strong style="color:#FF6B35">{int(THRESHOLD_PCT*100)}%</strong>
         </div>
         """, unsafe_allow_html=True)
+
+        # ── DEBUG: show secrets status ──
+        with st.expander("🔧 Connection Debug", expanded=False):
+            try:
+                all_keys = list(st.secrets.keys())
+                st.write("**Secret keys found:**", all_keys)
+                
+                sheet_id = st.secrets.get("GSHEET_ID", "NOT FOUND")
+                st.write("**GSHEET_ID:**", sheet_id[:30] + "..." if len(str(sheet_id)) > 30 else sheet_id)
+                st.write("**Starts with http?**", str(sheet_id).startswith("http"))
+                st.write("**Length:**", len(str(sheet_id)))
+                
+                has_gcp = "gcp_service_account" in st.secrets
+                st.write("**gcp_service_account present:**", has_gcp)
+                
+                configured = has_sheets_configured()
+                st.write("**has_sheets_configured():**", configured)
+                st.write("**using_sheets flag:**", st.session_state.get("using_sheets", "not set"))
+                
+                if configured:
+                    st.success("✅ Config looks correct")
+                    if st.button("🔄 Force reconnect to Sheets"):
+                        if "att_log" in st.session_state:
+                            del st.session_state["att_log"]
+                        if "using_sheets" in st.session_state:
+                            del st.session_state["using_sheets"]
+                        st.rerun()
+                else:
+                    st.error("❌ Config incomplete — check above")
+            except Exception as e:
+                st.error(f"Debug error: {e}")
 
         return sel_batch, int(session_no), session_date, int(sched_dur), threshold_min
 

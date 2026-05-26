@@ -593,8 +593,8 @@ def render_topbar():
                 border-radius:12px;padding:14px 24px;margin-bottom:18px;
                 box-shadow:0 4px 20px rgba(27,58,107,0.22);
                 display:flex;align-items:center;justify-content:space-between;gap:20px;">
-        <div style="background:white;border-radius:8px;padding:8px 14px;display:inline-flex;align-items:center;">
-            <img src="data:image/png;base64,{logo}" style="height:38px;width:auto;display:block;" alt="MPOnline">
+        <div style="background:white;border-radius:8px;padding:10px 18px;display:inline-flex;align-items:center;">
+            <img src="data:image/png;base64,{logo}" style="height:52px;width:auto;display:block;" alt="MPOnline">
         </div>
         <div style="text-align:right;flex:1;">
             <div style="font-size:1rem;font-weight:700;color:white;line-height:1.2;">VITS Attendance Intelligence</div>
@@ -670,7 +670,7 @@ def render_sidebar(batches_df):
         """, unsafe_allow_html=True)
 
         # ── DEBUG: show secrets status ──
-        with st.expander("🔧 Connection Debug", expanded=False):
+        with st.expander("🔧 Connection Debug — CLICK HERE", expanded=True):
             try:
                 all_keys = list(st.secrets.keys())
                 st.write("**Secret keys found:**", all_keys)

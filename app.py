@@ -370,7 +370,7 @@ def export_excel(master_df, log_df, summary_df):
                 for c, col in enumerate(sum_cols):
                     v = row[col]
                     if col == 'Attend_Pct':
-                        ws2.write(r+1, c, v if v is not None else '', pct_fmt)
+                        ws2.write_number(r+1, c, float(v), pct_fmt) if v is not None else ws2.write_blank(r+1, c, None, pct_fmt)
                     elif col == 'Status':
                         sf = green_fmt if '✅ Eligible' in str(v) else (amber_fmt if '⚠' in str(v) else (red_fmt if '❌' in str(v) else cell_fmt))
                         ws2.write(r+1, c, v, sf)
@@ -390,7 +390,7 @@ def export_excel(master_df, log_df, summary_df):
             for c, col in enumerate(risk_cols):
                 v = row[col]
                 if col == 'Attend_Pct':
-                    ws3.write(r+1, c, v if v is not None else '', pct_fmt)
+                    ws3.write_number(r+1, c, float(v), pct_fmt) if v is not None else ws3.write_blank(r+1, c, None, pct_fmt)
                 elif col == 'Status':
                     sf = amber_fmt if '⚠' in str(v) else red_fmt
                     ws3.write(r+1, c, v, sf)
@@ -417,7 +417,7 @@ def export_excel(master_df, log_df, summary_df):
             fmt   = alt_fmt if r % 2 == 0 else cell_fmt
             for c, v in enumerate(vals):
                 if c == 9:
-                    ws4.write(r+1, c, v if v is not None else '', pct_fmt)
+                    ws4.write_number(r+1, c, float(v), pct_fmt) if v is not None else ws4.write_blank(r+1, c, None, pct_fmt)
                 else:
                     ws4.write(r+1, c, v, fmt)
 
@@ -443,7 +443,7 @@ def export_excel(master_df, log_df, summary_df):
                 ws5.write(r+1, 4, row['Present'], fmt)
                 ws5.write(r+1, 5, row['Late'], fmt)
                 ws5.write(r+1, 6, row['Absent'], fmt)
-                ws5.write(r+1, 7, row['Rate'], pct_fmt)
+                ws5.write_number(r+1, 7, float(row['Rate']), pct_fmt) if row['Rate'] is not None else ws5.write_blank(r+1, 7, None, pct_fmt)
 
     return buf.getvalue()
 
@@ -787,17 +787,20 @@ def tab_dashboard(master_df, batches_df):
     </table></div>
     """, unsafe_allow_html=True)
 
-    # Export button
+    # Export button — generate only when clicked
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     if not log_df.empty:
-        xl = export_excel(master_df, log_df, summary_df)
-        st.download_button(
-            "⬇ Export Full Excel Report",
-            data=xl,
-            file_name=f"VITS_Attendance_{date.today().isoformat()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
+        if st.button("⬇ Generate & Export Full Excel Report", type="primary"):
+            try:
+                xl = export_excel(master_df, log_df, summary_df)
+                st.download_button(
+                    "⬇ Click here to download",
+                    data=xl,
+                    file_name=f"VITS_Attendance_{date.today().isoformat()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            except Exception as e:
+                st.error(f"Export error: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

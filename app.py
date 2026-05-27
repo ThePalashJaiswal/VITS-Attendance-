@@ -257,10 +257,9 @@ def get_logo_b64():
 
 # ── GOOGLE SHEETS PERSISTENCE ─────────────────────────────────────────────────
 def get_gsheet_client():
-    """Return authorised gspread client using service_account.json file in data/."""
+    """Return authorised gspread client using gspread native Streamlit secrets support."""
     try:
         import gspread
-        import json
         from google.oauth2.service_account import Credentials
 
         scopes = [
@@ -268,21 +267,24 @@ def get_gsheet_client():
             "https://www.googleapis.com/auth/drive",
         ]
 
-        # Primary: read service_account.json from data/ folder
-        sa_path = os.path.join(DATA_DIR, "service_account.json")
-        if os.path.exists(sa_path):
-            with open(sa_path, "r") as f:
-                creds_dict = json.load(f)
-            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-            client = gspread.authorize(creds)
-            st.session_state.pop("gsheet_error", None)
-            return client
+        # Use gspread's native service_account_from_dict — most reliable method
+        # Extract dict and fix private key newlines precisely
+        sa = st.secrets["gcp_service_account"]
+        creds_dict = {
+            "type":                        sa.get("type", "service_account"),
+            "project_id":                  sa.get("project_id", ""),
+            "private_key_id":              sa.get("private_key_id", ""),
+            "private_key":                 sa.get("private_key", ""),
+            "client_email":                sa.get("client_email", ""),
+            "client_id":                   sa.get("client_id", ""),
+            "auth_uri":                    sa.get("auth_uri", "https://accounts.google.com/o/oauth2/auth"),
+            "token_uri":                   sa.get("token_uri", "https://oauth2.googleapis.com/token"),
+            "auth_provider_x509_cert_url": sa.get("auth_provider_x509_cert_url", "https://www.googleapis.com/oauth2/v1/certs"),
+            "client_x509_cert_url":        sa.get("client_x509_cert_url", ""),
+        }
 
-        # Fallback: TOML secrets
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        pk = str(creds_dict.get("private_key", ""))
-        pk = pk.replace("\\n", "\n")
-        creds_dict["private_key"] = pk
+        # The private key from TOML triple-quotes comes through as a real multiline string
+        # gspread/google-auth needs it exactly as-is — no modification needed
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         client = gspread.authorize(creds)
         st.session_state.pop("gsheet_error", None)
@@ -293,26 +295,32 @@ def get_gsheet_client():
         return None
 
 def get_sheet(client, sheet_name="Attendance Log"):
-    """Return the worksheet, creating it if needed."""
+    """Return the worksheet, creating spreadsheet and tab if needed."""
     sheet_id = st.secrets.get("GSHEET_ID", "").strip()
-    if not sheet_id:
-        st.session_state["gsheet_error"] = "GSHEET_ID is empty"
-        return None
     sh = None
-    # Try open_by_key first
-    try:
-        sh = client.open_by_key(sheet_id)
-    except Exception as e1:
-        # Fallback: open_by_url
+
+    # Try to open by key
+    if sheet_id:
         try:
-            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-            sh = client.open_by_url(url)
-        except Exception as e2:
+            sh = client.open_by_key(sheet_id)
+        except Exception as e1:
+            st.session_state["gsheet_error"] = f"open_by_key failed: {e1}"
+
+    # If no sheet_id or open failed, create a new spreadsheet
+    if sh is None:
+        try:
+            sh = client.create("VITS Attendance Log")
+            sh.share(None, perm_type="anyone", role="writer")
+            # Save the new ID to session state so user can update secrets
+            st.session_state["new_sheet_id"] = sh.id
             st.session_state["gsheet_error"] = (
-                f"Cannot open Sheet (404 = check Drive API is enabled AND Sheet is shared "
-                f"with the bot email). key_err={e1} | url_err={e2}"
+                f"Created new Sheet with ID: {sh.id} — "
+                f"Update GSHEET_ID in Streamlit Secrets to this value."
             )
+        except Exception as e2:
+            st.session_state["gsheet_error"] = f"Cannot open or create Sheet: {e2}"
             return None
+
     # Get or create the worksheet tab
     try:
         return sh.worksheet(sheet_name)
@@ -322,7 +330,7 @@ def get_sheet(client, sheet_name="Attendance Log"):
             ws.append_row(LOG_COLS)
             return ws
         except Exception as e:
-            st.session_state["gsheet_error"] = f"Worksheet create failed: {e}"
+            st.session_state["gsheet_error"] = f"Worksheet tab failed: {e}"
             return None
 
 def load_log_from_sheet():
@@ -739,6 +747,10 @@ def render_sidebar(batches_df):
                 err = st.session_state.get("gsheet_error")
                 if err:
                     st.error(f"**Last error:** {err[:300]}")
+
+                new_id = st.session_state.get("new_sheet_id")
+                if new_id:
+                    st.warning(f"New Sheet created! Update GSHEET_ID in Secrets to: {new_id}")
 
                 if st.button("🔄 Test connection to Sheets"):
                     st.session_state.pop("gsheet_error", None)
